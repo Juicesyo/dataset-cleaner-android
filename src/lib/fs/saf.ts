@@ -37,14 +37,19 @@ export interface SafInterface {
 
 export const Saf = registerPlugin<SafInterface>('Saf');
 
-/** True when the native plugin is actually present in this build. */
+/**
+ * True when the native plugin is actually present in this build.
+ *
+ * `Capacitor.Plugins['Saf']` cannot answer this: `registerPlugin('Saf')` assigns
+ * a proxy into `Plugins` from JavaScript unconditionally, whether or not any
+ * native implementation exists. `isPluginAvailable` consults `PluginHeaders`,
+ * which the native bridge injects from the registered plugin classes, so it
+ * reflects reality.
+ */
 export function hasSafPlugin(): boolean {
   try {
-    // On the web, registerPlugin returns a proxy whose methods throw when
-    // called, so probe the plugin registry rather than trusting the shape.
     if (!Capacitor.isNativePlatform()) return false;
-    const plugins = (Capacitor as unknown as { Plugins?: Record<string, unknown> }).Plugins;
-    return Boolean(plugins && plugins['Saf']);
+    return Capacitor.isPluginAvailable('Saf');
   } catch {
     return false;
   }

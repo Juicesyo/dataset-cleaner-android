@@ -114,11 +114,14 @@ public class SafPlugin extends Plugin {
         }
 
         // Keep the grant across process restarts so exports do not re-prompt.
+        // Anything other than a security failure here would abort the method
+        // before resolving, leaving the JS promise pending forever, so the
+        // catch is deliberately broad.
         try {
             getContext().getContentResolver().takePersistableUriPermission(
                     treeUri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        } catch (SecurityException ignored) {
+        } catch (Exception ignored) {
             // Some providers refuse persistable grants; the session grant still works.
         }
 
@@ -128,7 +131,13 @@ public class SafPlugin extends Plugin {
 
         io.execute(() -> {
             JSArray files = new JSArray();
-            collect(treeUri, files, 0, recursive);
+            try {
+                collect(treeUri, files, 0, recursive);
+            } catch (Exception e) {
+                // Never leave the caller waiting: a failed walk is reported, and
+                // whatever was collected before the failure is still returned.
+                Logger.warn("Saf walk failed: " + e.getMessage());
+            }
             JSObject ret = new JSObject();
             ret.put("uri", treeUriStr);
             ret.put("name", name);

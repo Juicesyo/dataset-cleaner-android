@@ -489,9 +489,12 @@ async function main(): Promise<void> {
   console.log('\n[10] 保存目标保护与操作可读性');
   await runSaveAndClarityChecks(browser, url, datasetPath, errors);
 
+  console.log('\n[11] 目录导入');
+  await runDirectoryImportChecks(browser, url, errors);
+
   /* ------------------------------------------------------- no JS errors */
 
-  console.log('\n[11] 运行时错误检查');
+  console.log('\n[12] 运行时错误检查');
   // Ignore the aborted-download noise the export blob can trigger.
   const realErrors = errors.filter(
     (e) => !/Download the React DevTools|favicon/i.test(e),
@@ -726,6 +729,115 @@ async function runSaveAndClarityChecks(
   );
 
   await ctx.close();
+}
+
+/**
+ * Covers directory import on both kinds of browser.
+ *
+ * The failure this guards against: most mobile browsers cannot select a folder
+ * at all, and the old code returned an empty list, so "选择目录" looked like it
+ * silently did nothing. It must instead be refused up front with an explanation.
+ */
+async function runDirectoryImportChecks(
+  browser: Browser,
+  url: string,
+  errors: string[],
+): Promise<void> {
+  const openSheet = async (p: Page) => {
+    await p.click('.toolbar button:has-text("导入")');
+    await p.waitForSelector('.sheet-actions', { timeout: 5000 });
+  };
+
+  // --- Case A: no folder picker of any kind -----------------------------
+  {
+    const ctx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+    });
+    // Simulate a browser whose file picker has no "select folder" affordance.
+    await ctx.addInitScript(`
+      try { delete HTMLInputElement.prototype.webkitdirectory; } catch (e) {}
+      try {
+        Object.defineProperty(window, 'showDirectoryPicker', {
+          value: undefined, configurable: true, writable: true,
+        });
+      } catch (e) {}
+    `);
+    const p = await ctx.newPage();
+    p.on('pageerror', (e) => errors.push(e.message));
+    await p.goto(url, { waitUntil: 'networkidle' });
+
+    const stillSupported = await p.evaluate(
+      "'webkitdirectory' in HTMLInputElement.prototype || typeof window.showDirectoryPicker === 'function'",
+    );
+    check('已模拟出不支持目录选择的环境', !stillSupported, String(stillSupported));
+
+    await openSheet(p);
+    const dirButton = p.locator('.sheet-actions button:has-text("选择目录")');
+    check('不支持时目录按钮被禁用', await dirButton.isDisabled());
+    check(
+      '不支持时给出可执行的替代方案',
+      ((await p.textContent('.warn-box')) ?? '').includes('选择文件（可多选）'),
+    );
+    check(
+      '不支持时提示 APK 可用',
+      ((await p.textContent('.warn-box')) ?? '').includes('APK'),
+    );
+    await ctx.close();
+  }
+
+  // --- Case B: File System Access API available -------------------------
+  {
+    const ctx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+    });
+    // A fake two-level tree, exercising the recursive walk.
+    await ctx.addInitScript(`
+      const rec = (q, a) => JSON.stringify({
+        conversations: [{ from: 'human', value: q }, { from: 'gpt', value: a }],
+        _input_fingerprint: 'fp-' + q,
+      });
+      const file = (name, text) => ({
+        kind: 'file', name, getFile: async () => new File([text], name),
+      });
+      window.showDirectoryPicker = async () => ({
+        kind: 'directory',
+        name: 'root',
+        entries: async function* () {
+          yield ['a.jsonl', file('a.jsonl', rec('问A', '答A') + '\\n' + rec('问A2', '答A2'))];
+          yield ['notes.txt', file('notes.txt', 'ignore me')];
+          yield ['sub', {
+            kind: 'directory',
+            name: 'sub',
+            entries: async function* () {
+              yield ['b.jsonl', file('b.jsonl', rec('问B', '答B'))];
+            },
+          }];
+        },
+      });
+    `);
+    const p = await ctx.newPage();
+    p.on('pageerror', (e) => errors.push(e.message));
+    await p.goto(url, { waitUntil: 'networkidle' });
+
+    await openSheet(p);
+    const dirButton = p.locator('.sheet-actions button:has-text("选择目录")');
+    check('支持时目录按钮可用', !(await dirButton.isDisabled()));
+    check('支持时不显示警告', (await p.locator('.warn-box').count()) === 0);
+
+    await dirButton.click();
+    await p.waitForSelector('.sample-card', { timeout: 10_000 });
+    // 2 from a.jsonl + 1 from sub/b.jsonl; notes.txt must be ignored.
+    check(
+      '递归导入子目录并忽略非数据集文件',
+      (await p.locator('.sample-card').count()) === 3,
+      String(await p.locator('.sample-card').count()),
+    );
+    await ctx.close();
+  }
 }
 
 main()

@@ -6,6 +6,8 @@
 
 **导入**
 - 文件多选（`.json` 单条 / `.jsonl` `.ndjson` 多条），或选择目录递归导入
+- 目录导入优先走 File System Access API，其次 `<input webkitdirectory>`；
+  **多数手机浏览器不支持选择目录**，此时按钮会禁用并说明替代方案（改用多选文件，或使用 APK）
 - 格式自动识别；无法解析的数据行会被跳过并给出带行号的警告，不影响其余数据
 - 字段容错：`from`/`value` 之外，也接受 `role`/`content` 等常见变体
 
@@ -75,7 +77,7 @@ npm install
 npm run dev            # 局域网可访问，手机浏览器也能打开调试
 npm run typecheck      # TypeScript 类型检查
 npm run verify         # 数据层：解析 / 往返 / fingerprint / diff / 思考标签 (113 项)
-npm run verify:ui      # 浏览器端真实交互：导入、编辑、撤销、还原、保存、模型选择 (76 项)
+npm run verify:ui      # 浏览器端真实交互：导入、编辑、撤销、还原、保存、模型、目录 (83 项)
 npm run verify:layout  # 移动端布局、编辑框自适应与溢出、diff 对比度 (22 项)
 npm run build          # 产出 dist/
 ```

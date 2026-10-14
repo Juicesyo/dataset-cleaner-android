@@ -5,7 +5,7 @@ import { loadConfig, SettingsDrawer, type BatchSettings } from './components/Set
 import { SampleCard } from './components/SampleCard';
 import { buildRewriteMessages, chat, listModels, type LlmConfig } from './lib/llm';
 import type { Sample } from './types';
-import { getBackend } from './lib/fs';
+import { directoryImportAvailable, getBackend } from './lib/fs';
 import { Toolbar } from './components/Toolbar';
 import { BatchPanel } from './components/BatchPanel';
 import { SearchBar, type FilterState } from './components/SearchBar';
@@ -189,7 +189,14 @@ export default function App() {
     try {
       const report = directory ? await store.importDirectory() : await store.importFiles();
       if (report.files === 0) {
-        notify('err', '没有导入任何数据集文件');
+        // Distinguish "the picker cannot do this" from "the folder was empty";
+        // they need very different user actions.
+        notify(
+          'err',
+          directory
+            ? '没有从该目录导入任何数据。请确认目录里有 .json / .jsonl / .ndjson 文件。'
+            : '没有导入任何数据集文件',
+        );
         return;
       }
       notify(
@@ -526,6 +533,9 @@ interface ImportSheetProps {
 
 function ImportSheet({ open, onClose, onPick, datasets, onRemove }: ImportSheetProps) {
   if (!open) return null;
+  // Most mobile browsers cannot select a folder, so say so up front rather than
+  // letting the button lead to an empty import.
+  const directoryOk = directoryImportAvailable();
   return (
     <div className="drawer-backdrop" onClick={onClose}>
       <aside className="drawer sheet" onClick={(e) => e.stopPropagation()}>
@@ -540,10 +550,27 @@ function ImportSheet({ open, onClose, onPick, datasets, onRemove }: ImportSheetP
           <button type="button" className="primary big" onClick={() => onPick(false)}>
             选择文件（可多选）
           </button>
-          <button type="button" className="primary big" onClick={() => onPick(true)}>
+          <button
+            type="button"
+            className="primary big"
+            onClick={() => onPick(true)}
+            disabled={!directoryOk}
+            title={directoryOk ? undefined : '当前环境不支持选择目录'}
+          >
             选择目录（递归导入）
           </button>
         </div>
+
+        {!directoryOk && (
+          <div className="warn-box">
+            <strong>当前浏览器不支持选择目录</strong>
+            <p>
+              多数手机浏览器的系统文件选择器没有「选择文件夹」入口，因此无法按目录导入。
+              请改用「选择文件（可多选）」，或安装 Android APK ——
+              APK 通过系统目录授权，可以递归导入整个文件夹。
+            </p>
+          </div>
+        )}
 
         <p className="hint">
           单个文件会按内容自动判断是 JSON 还是 JSONL；扩展名 <code>.jsonl</code>/
