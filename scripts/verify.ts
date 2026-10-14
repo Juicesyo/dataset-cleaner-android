@@ -400,6 +400,82 @@ check(
   buildRewriteMessages(DEFAULT_CONFIG, '   ', conversation, 0)[1].content.includes('润色'),
 );
 
+/* ------------------------------------- thinking tags vs. dataset content */
+
+// A dataset can legitimately store chain-of-thought using the very same markers
+// the model uses for its own reasoning, so blind stripping deleted that data.
+console.log('\n[11] 思考标签与数据自带思维链的冲突');
+
+{
+  const S = '<think>';
+  const E = '</think>';
+  const auto = (out: string, source: string) =>
+    stripThinking(out, S, E, { mode: 'auto', sourceText: source });
+
+  // 1. A faithful reproduction of reasoning data must survive untouched.
+  const src1 = `${S}\n数据自带思考\n${E}\n最终答案。`;
+  const faithful = `${S}\n数据自带思考（已润色）\n${E}\n最终答案在这里。`;
+  const r1 = auto(faithful, src1);
+  check('不删除数据自带的思维链', r1.text.includes(S) && r1.text.includes(E), r1.text);
+  check('决策为保留', r1.decision === 'kept-source-has-tags', r1.decision);
+  check('未标记为已剥离', r1.removed === false);
+
+  // 2. A model that prepends its own reasoning adds one extra block.
+  const withPreamble = `${S}\n我自己的思考\n${E}\n${S}\n数据自带思考（已润色）\n${E}\n最终答案在这里。`;
+  const r2 = auto(withPreamble, src1);
+  check('剥离模型新增的思考段', !r2.text.includes('我自己的思考'), r2.text);
+  check('保留数据自带的那段', r2.text.includes('数据自带思考（已润色）'), r2.text);
+  check('决策为只剥离开头', r2.decision === 'stripped-leading', r2.decision);
+
+  // 3. The data's block sits mid-body; only the leading one is the model's.
+  const src3 = `前言。\n\n${S}\n正文中的思考\n${E}\n结尾。`;
+  const out3 = `${S}\n模型自己的思考\n${E}\n${src3}`;
+  const r3 = auto(out3, src3);
+  check('剥离开头的模型思考', !r3.text.includes('模型自己的思考'), r3.text);
+  check('保留正文中段的思维链', r3.text.includes('正文中的思考'), r3.text);
+
+  // 4. Plain data: every block must be the model's.
+  const r4 = auto(`${S}\n模型思考\n${E}\n改写后的回复。`, '普通回复。');
+  check('普通数据仍剥离全部', r4.text.trim() === '改写后的回复。', JSON.stringify(r4.text));
+
+  // 5. Explicit modes override the heuristic.
+  const src5 = `${S}\n数据思考\n${E}\n答案`;
+  const out5 = `${S}\n模型思考\n${E}\n${S}\n数据思考\n${E}\n答案`;
+  check(
+    'always 仍剥离全部',
+    !stripThinking(out5, S, E, { mode: 'always', sourceText: src5 }).text.includes(S),
+  );
+  check('never 完全不剥离', stripThinking(out5, S, E, { mode: 'never', sourceText: src5 }).text === out5);
+  const lead5 = stripThinking(out5, S, E, { mode: 'leading', sourceText: src5 });
+  check(
+    'leading 只剥离开头一段',
+    !lead5.text.includes('模型思考') && lead5.text.includes('数据思考'),
+    lead5.text,
+  );
+
+  // 6. Several data blocks must all survive when the model adds none.
+  const src6 = `${S}\n一\n${E}中间${S}\n二\n${E}`;
+  check('多块数据在无新增时全部保留', auto(src6, src6).text === src6);
+
+  // 7. A surplus of two is removed from the front, not from the middle.
+  const src7 = `${S}\n数据\n${E}答案`;
+  const out7 = `${S}\n模型一\n${E}\n${S}\n模型二\n${E}\n${S}\n数据\n${E}答案`;
+  const r7 = auto(out7, src7);
+  check(
+    '多余两块时从头剥离两块',
+    !r7.text.includes('模型一') && !r7.text.includes('模型二') && r7.text.includes('数据'),
+    r7.text,
+  );
+
+  // 8. An unterminated opener still cuts, without eating an earlier paired block.
+  check('未闭合时截断到结尾', auto(`${S}没写完`, '普通回复').text.trim() === '');
+  check(
+    '未闭合截断不影响此前的成对块',
+    auto(`${S}数据\n${E}答案${S}又没写完`, '普通回复').text.includes('答案'),
+    JSON.stringify(auto(`${S}数据\n${E}答案${S}又没写完`, '普通回复').text),
+  );
+}
+
 /* ----------------------------------------------------------------- done */
 
 console.log(`\n${failures === 0 ? '全部通过' : '存在失败'}: ${checks - failures}/${checks}`);

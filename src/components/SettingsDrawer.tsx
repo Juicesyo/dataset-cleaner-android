@@ -244,6 +244,25 @@ export function SettingsDrawer({
             这里设置包裹思考内容的标签，应用时会自动剥离，避免把思考过程写进数据集。
             留空则不做剥离。
           </p>
+
+          <label>
+            剥离方式
+            <select
+              value={config.thinkingMode}
+              onChange={(e) => set('thinkingMode', e.target.value as LlmConfig['thinkingMode'])}
+            >
+              <option value="auto">自动（推荐）：按原文是否含标签决定</option>
+              <option value="always">总是剥离全部思考块</option>
+              <option value="leading">只剥离开头那一段</option>
+              <option value="never">不剥离</option>
+            </select>
+          </label>
+          <p className="hint">
+            <b>如果你的数据集本身就含思维链</b>，请用「自动」：原文不含标签时剥离全部；
+            原文含标签时，只剥离模型加在开头的思考段，正文里的思维链作为数据保留；
+            若原文整段都以该标签开头，则完全不剥离，以免误删数据。
+          </p>
+
           <div className="row">
             <label>
               思考开始标签

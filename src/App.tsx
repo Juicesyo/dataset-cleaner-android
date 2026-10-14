@@ -251,14 +251,16 @@ export default function App() {
     const key = `${sampleId}:${turnIndex}`;
     setAiBusy((prev) => new Set(prev).add(key));
     try {
+      const before = found.sample.conversations[turnIndex]?.value ?? '';
       const messages = buildRewriteMessages(
         config,
         batchSettings.instruction,
         found.sample.conversations,
         turnIndex,
       );
-      const res = await chat(config, messages);
-      const before = found.sample.conversations[turnIndex]?.value ?? '';
+      // Passing the original text lets the client tell the model's own reasoning
+      // apart from a chain of thought that belongs to the dataset.
+      const res = await chat(config, messages, { sourceText: before });
 
       if (res.truncated) {
         notify(

@@ -22,8 +22,8 @@
 - **批量修改**：主界面「用 AI 批量修改」面板内直接选择范围与轮次类型，
   并实时显示会处理多少条样本、多少个轮次、约发出多少次请求
 - **模型列表**：设置里「获取列表」会请求 `/models`，点击即可选用；也可手动输入
-- **思考模型支持**：可自定义思考标签（默认 `<think>` … `</think>`），
-  推理模型的思考过程会在写回前被剥离，不会进入数据集
+- **思考模型支持**：可自定义思考标签（默认 `<think>` … `</think>`）与剥离方式。
+  推理模型的思考过程会在写回前被剥离；**数据集本身含思维链时不会被误删**
 - 自定义 Base URL、API Key、temperature、max_tokens、附加请求体
 - 自定义系统提示词，可一键恢复默认
 - 范围可选：当前筛选结果 / 仅已手动改动 / 仅勾选；可只改 `gpt`、只改 `human` 或两者；并发可调
@@ -72,7 +72,7 @@ npm run android:apk
 npm install
 npm run dev            # 局域网可访问，手机浏览器也能打开调试
 npm run typecheck      # TypeScript 类型检查
-npm run verify         # 数据层：解析 / 往返 / fingerprint / diff 不变量 / 思考标签 (78 项)
+npm run verify         # 数据层：解析 / 往返 / fingerprint / diff / 思考标签冲突 (94 项)
 npm run verify:ui      # 浏览器端真实交互：导入、编辑、撤销、还原、保存、模型选择 (66 项)
 npm run verify:layout  # 移动端布局、编辑框自适应与溢出、diff 对比度 (22 项)
 npm run build          # 产出 dist/

@@ -33,6 +33,11 @@ export interface BatchItemResult {
   message?: string;
   before?: string;
   after?: string;
+  /**
+   * Set when the reply kept its thinking tags because the source used them too.
+   * Surfaced so a user who expected stripping can see why it did not happen.
+   */
+  keptThinking?: boolean;
 }
 
 const EMPTY: BatchProgress = {
@@ -125,7 +130,12 @@ export function useBatch(): UseBatch {
             sample.conversations,
             turnIndex,
           );
-          const res = await chat(config, messages, { signal: ac.signal });
+          // `sourceText` lets the client tell the model's own reasoning apart
+          // from a chain of thought that is part of the dataset.
+          const res = await chat(config, messages, {
+            signal: ac.signal,
+            sourceText: turn.value,
+          });
           const out = res.content;
 
           if (res.truncated) {
@@ -139,7 +149,7 @@ export function useBatch(): UseBatch {
           } else if (out.trim().length === 0) {
             result.status = 'error';
             result.message = res.hadThinking
-              ? '剥离思考内容后为空，已跳过（请检查思考标签设置）'
+              ? '剥离思考内容后为空，已跳过（请检查思考标签与剥离方式设置）'
               : '模型返回空内容，已跳过';
             failed++;
           } else if (out.trim() === turn.value.trim()) {
@@ -150,6 +160,11 @@ export function useBatch(): UseBatch {
             result.status = 'ok';
             result.before = turn.value;
             result.after = out;
+            // Report when the tags were treated as data rather than reasoning,
+            // so an unexpected-looking result is explained rather than mysterious.
+            if (res.thinkingDecision === 'kept-source-has-tags') {
+              result.keptThinking = true;
+            }
             apply(sample.id, turnIndex, out);
             ok++;
           }

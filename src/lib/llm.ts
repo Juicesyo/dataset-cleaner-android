@@ -28,6 +28,8 @@ export interface LlmConfig {
    */
   thinkingStartTag: string;
   thinkingEndTag: string;
+  /** How aggressively to remove reasoning from the model's output. */
+  thinkingMode: ThinkingMode;
 }
 
 export const DEFAULT_SYSTEM_PROMPT = [
@@ -52,6 +54,7 @@ export const DEFAULT_CONFIG: LlmConfig = {
   extraBody: '',
   thinkingStartTag: '<think>',
   thinkingEndTag: '</think>',
+  thinkingMode: 'auto',
 };
 
 /** Strips a trailing `/chat/completions` so other endpoints can be appended. */
@@ -80,6 +83,12 @@ export interface ChatMessage {
 
 export interface ChatOptions {
   signal?: AbortSignal;
+  /**
+   * The text being rewritten. It decides whether thinking tags in the response
+   * belong to the model or to the dataset, so it must be supplied whenever the
+   * call rewrites existing content.
+   */
+  sourceText?: string;
 }
 
 export interface ChatResult {
@@ -92,44 +101,158 @@ export interface ChatResult {
    * delete part of the sample. Callers must refuse to apply it.
    */
   truncated: boolean;
-  /** True when a thinking block was present and removed. */
+  /** True when thinking content was removed. */
   hadThinking: boolean;
+  /** Why thinking content was or was not removed. */
+  thinkingDecision: ThinkingDecision;
   finishReason?: string;
 }
 
-/** Removes a reasoning block delimited by the configured tags. */
+/**
+ * How aggressively to remove reasoning blocks from a model's output.
+ *
+ * The hard part is that a reasoning model's own scratchpad and a dataset that
+ * legitimately stores chain-of-thought use the *same* markers, so the tags alone
+ * cannot say who wrote them. Stripping blindly therefore deletes data the user
+ * is trying to clean. The decision is made per item, from the source text.
+ *
+ *  - `auto`   (default) compares how many blocks the source had with how many
+ *             the reply has. A model should not *add* reasoning blocks to
+ *             content that already has them, so any surplus is treated as the
+ *             model's own and removed from the front; the data's blocks are
+ *             preserved. A source with no blocks at all means every block in the
+ *             reply is the model's, so all of them go.
+ *  - `always` strip every block regardless of the source.
+ *  - `leading` strip only a leading block.
+ *  - `never`  never strip.
+ */
+export type ThinkingMode = 'auto' | 'always' | 'leading' | 'never';
+
+/** Why a stripping decision was reached, so the UI can explain itself. */
+export type ThinkingDecision =
+  | 'stripped-all'
+  | 'stripped-leading'
+  | 'kept-source-has-tags'
+  | 'kept-disabled'
+  | 'nothing-to-strip';
+
+export interface StripThinkingOptions {
+  mode?: ThinkingMode;
+  /** The text being rewritten; decides whether the tags belong to the data. */
+  sourceText?: string;
+}
+
+export interface StripThinkingResult {
+  text: string;
+  removed: boolean;
+  decision: ThinkingDecision;
+}
+
+/**
+ * Cuts from the first start tag that has no matching end tag.
+ *
+ * An unterminated opener means the model never finished thinking; keeping the
+ * remainder would write half a scratchpad into the dataset.
+ *
+ * Only an *unmatched* opener triggers a cut. A plain "opener with no closer
+ * later" search would wrongly discard a later, properly paired block, which is
+ * exactly the data that must survive.
+ */
+function cutUnterminated(text: string, startRe: string, endRe: string): string {
+  const opener = new RegExp(startRe, 'gi');
+  let m: RegExpExecArray | null;
+  while ((m = opener.exec(text)) !== null) {
+    const rest = text.slice(m.index + m[0].length);
+    if (!new RegExp(endRe, 'i').test(rest)) return text.slice(0, m.index);
+  }
+  return text;
+}
+
+/** Counts reasoning blocks, treating a trailing unterminated opener as one. */
+function countBlocks(text: string, startRe: string, endRe: string): number {
+  if (!text) return 0;
+  const pairRe = new RegExp(`${startRe}[\\s\\S]*?${endRe}`, 'gi');
+  const pairs = (text.match(pairRe) ?? []).length;
+  const leftover = text.replace(pairRe, '');
+  const opens = (leftover.match(new RegExp(startRe, 'gi')) ?? []).length;
+  return pairs + opens;
+}
+
+/** Removes up to `count` blocks from the very start of the text. */
+function stripLeadingBlocks(
+  text: string,
+  count: number,
+  startRe: string,
+  endRe: string,
+): string {
+  let out = text;
+  const leading = new RegExp(`^\\s*${startRe}[\\s\\S]*?${endRe}`, 'i');
+  for (let i = 0; i < count; i++) {
+    if (!leading.test(out)) break;
+    out = out.replace(leading, '');
+  }
+  return out;
+}
+
+/**
+ * Removes reasoning blocks delimited by the configured tags.
+ *
+ * The tags are matched literally (escaped), because a closing tag such as
+ * `</think>` contains regex metacharacters.
+ */
 export function stripThinking(
   text: string,
   startTag: string,
   endTag: string,
-): { text: string; removed: boolean } {
+  opts: StripThinkingOptions = {},
+): StripThinkingResult {
+  const mode = opts.mode ?? 'auto';
   const start = startTag.trim();
   const end = endTag.trim();
-  if (!start || !end) return { text, removed: false };
 
-  let out = text;
-  let removed = false;
+  if (!start || !end) return { text, removed: false, decision: 'kept-disabled' };
 
-  // Escaped, because a tag like `</think>` contains regex metacharacters.
-  const pair = new RegExp(
-    `${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}`,
-    'gi',
-  );
-  if (pair.test(out)) {
-    removed = true;
-    out = out.replace(pair, '');
+  const startRe = escapeRegExp(start);
+  const endRe = escapeRegExp(end);
+  const source = opts.sourceText ?? '';
+  const sourceBlocks = countBlocks(source, startRe, endRe);
+  const outputBlocks = countBlocks(text, startRe, endRe);
+
+  if (mode === 'never') return { text, removed: false, decision: 'kept-disabled' };
+
+  if (outputBlocks === 0) return { text, removed: false, decision: 'nothing-to-strip' };
+
+  if (mode === 'always') {
+    return {
+      text: cutUnterminated(text.replace(new RegExp(`${startRe}[\\s\\S]*?${endRe}`, 'gi'), ''), startRe, endRe),
+      removed: true,
+      decision: 'stripped-all',
+    };
   }
 
-  // An unterminated opener means the model never finished thinking. Dropping
-  // the remainder is safer than writing half a scratchpad into the dataset; the
-  // caller sees an empty result and reports it as a failure.
-  const openOnly = new RegExp(`${escapeRegExp(start)}[\\s\\S]*$`, 'i');
-  if (!removed && openOnly.test(out)) {
-    removed = true;
-    out = out.replace(openOnly, '');
+  if (mode === 'leading') {
+    const out = cutUnterminated(stripLeadingBlocks(text, 1, startRe, endRe), startRe, endRe);
+    return { text: out, removed: true, decision: 'stripped-leading' };
   }
 
-  return { text: out, removed };
+  // auto
+  if (sourceBlocks === 0) {
+    // The dataset does not use these tags, so every block is the model's.
+    return {
+      text: cutUnterminated(text.replace(new RegExp(`${startRe}[\\s\\S]*?${endRe}`, 'gi'), ''), startRe, endRe),
+      removed: true,
+      decision: 'stripped-all',
+    };
+  }
+
+  const surplus = outputBlocks - sourceBlocks;
+  if (surplus <= 0) {
+    // No block the model added on its own, so these are the dataset's.
+    return { text, removed: false, decision: 'kept-source-has-tags' };
+  }
+
+  const out = cutUnterminated(stripLeadingBlocks(text, surplus, startRe, endRe), startRe, endRe);
+  return { text: out, removed: true, decision: 'stripped-leading' };
 }
 
 function escapeRegExp(s: string): string {
@@ -165,7 +288,10 @@ export async function chat(
     throw new Error(`响应缺少 choices[0].message.content`);
   }
 
-  const thinking = stripThinking(raw, config.thinkingStartTag, config.thinkingEndTag);
+  const thinking = stripThinking(raw, config.thinkingStartTag, config.thinkingEndTag, {
+    mode: config.thinkingMode,
+    sourceText: opts.sourceText,
+  });
   const cleaned = stripWrapper(thinking.text);
   const finishReason = extractFinishReason(json);
 
@@ -173,6 +299,7 @@ export async function chat(
     content: cleaned,
     truncated: finishReason === 'length',
     hadThinking: thinking.removed,
+    thinkingDecision: thinking.decision,
     finishReason,
   };
 }

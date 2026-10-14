@@ -51,6 +51,7 @@ export function BatchPanel({
 }: BatchPanelProps) {
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
   const failures = progress.report.filter((r) => r.status === 'error');
+  const keptThinking = progress.report.filter((r) => r.keptThinking).length;
   const idle = !progress.running;
 
   return (
@@ -159,6 +160,13 @@ export function BatchPanel({
           {failures.length > 0 && <span className="warn">，详见下方</span>}
           {progress.ok > 0 && <span> · 结果已应用，可用「撤销」回退</span>}
         </div>
+      )}
+
+      {!progress.running && keptThinking > 0 && (
+        <p className="hint">
+          其中 <b>{keptThinking}</b> 条的原文本身含有思考标签，已按「自动」方式视为数据保留，
+          未做剥离。若那些标签其实是模型自己的思考，请在设置里把剥离方式改为「总是剥离全部」。
+        </p>
       )}
 
       {!progress.running && failures.length > 0 && (
