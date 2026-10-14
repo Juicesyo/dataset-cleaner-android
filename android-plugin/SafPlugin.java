@@ -6,10 +6,10 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
-import android.util.Base64;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.Logger;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;

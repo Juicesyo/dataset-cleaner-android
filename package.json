@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "verify": "vite-node scripts/verify.ts",
+    "verify:native": "node scripts/check-native.mjs",
+    "verify:all": "npm run verify:native && npm run typecheck && npm run verify && npm run verify:ui && npm run verify:layout",
     "verify:ui": "vite-node scripts/ui-check.ts",
     "verify:layout": "vite-node scripts/layout-check.ts",
     "screenshot": "vite-node scripts/screenshot.ts",
