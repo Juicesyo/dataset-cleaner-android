@@ -39,6 +39,8 @@ export interface SettingsDrawerProps {
   batch: BatchSettings;
   onBatchChange: (next: BatchSettings) => void;
   onTest: () => Promise<string>;
+  /** Fetches the endpoint's model list for the picker. */
+  onFetchModels: () => Promise<string[]>;
 }
 
 export interface BatchSettings {
@@ -57,9 +59,13 @@ export function SettingsDrawer({
   batch,
   onBatchChange,
   onTest,
+  onFetchModels,
 }: SettingsDrawerProps) {
   const [testState, setTestState] = useState<'idle' | 'running' | 'ok' | 'fail'>('idle');
   const [testMessage, setTestMessage] = useState('');
+  const [models, setModels] = useState<string[]>([]);
+  const [modelState, setModelState] = useState<'idle' | 'loading' | 'ok' | 'fail'>('idle');
+  const [modelMessage, setModelMessage] = useState('');
 
   // Persist on every change; the payload is tiny.
   useEffect(() => {
@@ -68,6 +74,29 @@ export function SettingsDrawer({
 
   const set = <K extends keyof LlmConfig>(key: K, value: LlmConfig[K]) =>
     onChange({ ...config, [key]: value });
+
+  const runFetchModels = async () => {
+    setModelState('loading');
+    setModelMessage('');
+    try {
+      const ids = await onFetchModels();
+      setModels(ids);
+      if (ids.length === 0) {
+        setModelState('fail');
+        setModelMessage('接口没有返回任何模型，可继续手动填写模型名。');
+      } else {
+        setModelState('ok');
+        setModelMessage(`获取到 ${ids.length} 个模型，点击下方列表选择。`);
+        // Adopt the first model when the current value is clearly a placeholder.
+        if (!ids.includes(config.model) && !config.model.trim()) {
+          set('model', ids[0]);
+        }
+      }
+    } catch (err) {
+      setModelState('fail');
+      setModelMessage((err as Error).message);
+    }
+  };
 
   const runTest = async () => {
     setTestState('running');
@@ -126,15 +155,50 @@ export function SettingsDrawer({
 
           <label>
             模型
-            <input
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={config.model}
-              onChange={(e) => set('model', e.target.value)}
-              placeholder="gpt-4o-mini"
-            />
+            <div className="model-row">
+              <input
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={config.model}
+                onChange={(e) => set('model', e.target.value)}
+                placeholder="gpt-4o-mini"
+              />
+              <button
+                type="button"
+                className="mini"
+                onClick={runFetchModels}
+                disabled={modelState === 'loading'}
+              >
+                {modelState === 'loading' ? '获取中…' : '获取列表'}
+              </button>
+            </div>
           </label>
+
+          {models.length > 0 && (
+            <div className="model-picker">
+              <div className="model-chips">
+                {models.map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`chip ${id === config.model ? 'chip-active' : ''}`}
+                    onClick={() => set('model', id)}
+                    title={id}
+                  >
+                    {id}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {modelState !== 'idle' && modelState !== 'loading' && modelMessage && (
+            <p className={`hint ${modelState === 'fail' ? 'hint-err' : ''}`}>{modelMessage}</p>
+          )}
+          <p className="hint">
+            也可以直接手动输入模型名；「获取列表」会请求 <code>/models</code>。
+          </p>
 
           <div className="row">
             <label>
@@ -171,6 +235,54 @@ export function SettingsDrawer({
               placeholder='{"top_p": 0.9}'
             />
           </label>
+        </section>
+
+        <section className="field-group">
+          <h3>思考模型</h3>
+          <p className="hint">
+            推理模型（如 DeepSeek-R1、QwQ）会把思考过程直接写在回复里。
+            这里设置包裹思考内容的标签，应用时会自动剥离，避免把思考过程写进数据集。
+            留空则不做剥离。
+          </p>
+          <div className="row">
+            <label>
+              思考开始标签
+              <input
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={config.thinkingStartTag}
+                onChange={(e) => set('thinkingStartTag', e.target.value)}
+                placeholder="<think>"
+              />
+            </label>
+            <label>
+              思考结束标签
+              <input
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={config.thinkingEndTag}
+                onChange={(e) => set('thinkingEndTag', e.target.value)}
+                placeholder="</think>"
+              />
+            </label>
+          </div>
+          <button
+            type="button"
+            className="mini"
+            onClick={() => {
+              set('thinkingStartTag', '<think>');
+              set('thinkingEndTag', '</think>');
+            }}
+          >
+            恢复默认 (&lt;think&gt; … &lt;/think&gt;)
+          </button>
+          <p className="hint">
+            如果模型用了别的标记（例如 <code>&lt;thinking&gt;</code>、
+            <code>&lt;reasoning&gt;</code>），改成对应标签即可。只有开始标签、
+            没有结束标签时，会从开始标签处全部丢弃，并按「返回空内容」报错。
+          </p>
         </section>
 
         <section className="field-group">

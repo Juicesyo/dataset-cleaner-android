@@ -125,15 +125,27 @@ export function useBatch(): UseBatch {
             sample.conversations,
             turnIndex,
           );
-          const out = await chat(config, messages, { signal: ac.signal });
+          const res = await chat(config, messages, { signal: ac.signal });
+          const out = res.content;
 
-          if (out.trim() === turn.value.trim()) {
+          if (res.truncated) {
+            // Applying a cut-off rewrite would silently shorten the sample, so
+            // it is reported instead of written.
+            result.status = 'error';
+            result.message =
+              `输出被 max_tokens (${config.maxTokens}) 截断，已跳过以免丢失原文；` +
+              '请调大 max_tokens 或缩短该条内容';
+            failed++;
+          } else if (out.trim().length === 0) {
+            result.status = 'error';
+            result.message = res.hadThinking
+              ? '剥离思考内容后为空，已跳过（请检查思考标签设置）'
+              : '模型返回空内容，已跳过';
+            failed++;
+          } else if (out.trim() === turn.value.trim()) {
             result.status = 'unchanged';
             result.before = turn.value;
             result.after = out;
-          } else if (out.trim().length === 0) {
-            result.status = 'error';
-            result.message = '模型返回空内容，已跳过';
           } else {
             result.status = 'ok';
             result.before = turn.value;

@@ -342,6 +342,56 @@ async function main(): Promise<void> {
     'API Key 输入为密码型',
     (await page.locator('.drawer input[type="password"]').count()) === 1,
   );
+  check(
+    '思考标签字段存在且有默认值',
+    (await page.locator('.drawer input[placeholder="<think>"]').inputValue()) === '<think>' &&
+      (await page.locator('.drawer input[placeholder="</think>"]').inputValue()) === '</think>',
+  );
+  check(
+    '有获取模型列表按钮',
+    (await page.locator('.drawer button:has-text("获取列表")').count()) === 1,
+  );
+
+  // The model picker talks to `GET {base}/models`. Routing the request lets the
+  // parsing and the chip list be tested without a live provider.
+  await page.route('**/models', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ data: [{ id: 'zeta-model' }, { id: 'alpha-model' }] }),
+    });
+  });
+  await baseUrlInput.fill('https://stub.local/v1');
+  await page.click('.drawer button:has-text("获取列表")');
+  await page.waitForSelector('.model-chips .chip', { timeout: 10_000 });
+
+  const chips = await page.locator('.model-chips .chip').allTextContents();
+  check(
+    '模型列表被解析并排序',
+    JSON.stringify(chips) === JSON.stringify(['alpha-model', 'zeta-model']),
+    JSON.stringify(chips),
+  );
+
+  await page.locator('.model-chips .chip', { hasText: 'zeta-model' }).click();
+  check(
+    '点击模型后写入模型字段',
+    (await page.locator('.drawer input[placeholder="gpt-4o-mini"]').inputValue()) === 'zeta-model',
+  );
+  check(
+    '选中的模型有高亮',
+    (await page.locator('.model-chips .chip-active').textContent()) === 'zeta-model',
+  );
+
+  const savedConfig = await page.evaluate('localStorage.getItem("apk-evaluator.llm-config.v1")');
+  check(
+    '模型与思考标签已持久化',
+    Boolean(savedConfig) &&
+      JSON.parse(savedConfig as string).model === 'zeta-model' &&
+      JSON.parse(savedConfig as string).thinkingStartTag === '<think>',
+    String(savedConfig).slice(0, 160),
+  );
+
+  await page.unroute('**/models');
 
   /* ------------------------------------------------------------- reset */
 

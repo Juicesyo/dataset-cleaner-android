@@ -3,7 +3,7 @@ import { suggestName, useDatasets } from './lib/useDatasets';
 import { useBatch } from './lib/useBatch';
 import { loadConfig, SettingsDrawer, type BatchSettings } from './components/SettingsDrawer';
 import { SampleCard } from './components/SampleCard';
-import { buildRewriteMessages, chat, type LlmConfig } from './lib/llm';
+import { buildRewriteMessages, chat, listModels, type LlmConfig } from './lib/llm';
 import type { Sample } from './types';
 import { getBackend } from './lib/fs';
 import { Toolbar } from './components/Toolbar';
@@ -257,13 +257,29 @@ export default function App() {
         found.sample.conversations,
         turnIndex,
       );
-      const out = await chat(config, messages);
+      const res = await chat(config, messages);
       const before = found.sample.conversations[turnIndex]?.value ?? '';
-      if (out.trim() === before.trim()) {
+
+      if (res.truncated) {
+        notify(
+          'err',
+          `AI 输出被 max_tokens (${config.maxTokens}) 截断，已放弃应用以免丢失原文。请调大 max_tokens。`,
+        );
+      } else if (res.content.trim().length === 0) {
+        notify(
+          'err',
+          res.hadThinking
+            ? '剥离思考内容后为空，请检查设置里的思考标签'
+            : '模型返回空内容',
+        );
+      } else if (res.content.trim() === before.trim()) {
         notify('ok', 'AI 认为这一轮无需修改');
       } else {
-        store.updateTurn(sampleId, turnIndex, out, undefined);
-        notify('ok', 'AI 已改写这一轮（可撤销）');
+        store.updateTurn(sampleId, turnIndex, res.content, undefined);
+        notify(
+          'ok',
+          res.hadThinking ? 'AI 已改写这一轮（已剥离思考内容，可撤销）' : 'AI 已改写这一轮（可撤销）',
+        );
       }
     } catch (err) {
       notify('err', `AI 改写失败: ${(err as Error).message}`);
@@ -294,12 +310,14 @@ export default function App() {
   };
 
   const testConnection = async (): Promise<string> => {
-    const reply = await chat(config, [
+    const res = await chat(config, [
       { role: 'system', content: '你是一个测试助手，只回复：连接正常' },
       { role: 'user', content: '测试' },
     ]);
-    return reply;
+    return res.content;
   };
+
+  const fetchModels = async (): Promise<string[]> => listModels(config);
 
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -473,6 +491,7 @@ export default function App() {
         batch={batchSettings}
         onBatchChange={setBatchSettings}
         onTest={testConnection}
+        onFetchModels={fetchModels}
       />
 
       {toast && <div className={`toast ${toast.kind}`}>{toast.text}</div>}

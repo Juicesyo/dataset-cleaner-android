@@ -746,6 +746,59 @@ button.mini.ai:hover:not(:disabled) {
   padding: 1px 4px;
   border-radius: 3px;
 }
+.hint-err {
+  color: #ffb3ae;
+}
+
+/* ---------------------------------------------------------- model picker */
+
+.model-row {
+  display: flex;
+  gap: 6px;
+}
+.model-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.model-row button {
+  flex: 0 0 auto;
+  min-height: 38px;
+}
+.model-picker {
+  max-height: 168px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+.model-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  font: 11px ui-monospace, Menlo, Consolas, monospace;
+  padding: 4px 8px;
+  min-height: 0;
+  border-radius: 6px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  color: var(--fg-dim);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip:hover:not(:disabled) {
+  background: #26303d;
+  color: var(--fg);
+}
+.chip-active {
+  border-color: var(--accent);
+  color: #cfe0ff;
+  background: rgba(76, 141, 255, 0.18);
+}
 
 /* ------------------------------------------------------------- save sheet */
 

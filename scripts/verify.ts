@@ -18,7 +18,15 @@ import {
   validateForExport,
 } from '../src/lib/sharegpt.ts';
 import { diffText } from '../src/lib/diff.ts';
-import { resolveEndpoint, stripWrapper } from '../src/lib/llm.ts';
+import {
+  buildRewriteMessages,
+  DEFAULT_CONFIG,
+  parseModelIds,
+  resolveEndpoint,
+  resolveModelsEndpoint,
+  stripThinking,
+  stripWrapper,
+} from '../src/lib/llm.ts';
 
 let failures = 0;
 let checks = 0;
@@ -257,6 +265,140 @@ eq('剥离代码块围栏', stripWrapper('```\nhello\n```'), 'hello');
 eq('剥离带语言标记的围栏', stripWrapper('```text\nhello\n```'), 'hello');
 eq('剥离外层引号', stripWrapper('"hello"'), 'hello');
 eq('不动正文中的代码块', stripWrapper('看这段:\n```js\nx\n```\n结束'), '看这段:\n```js\nx\n```\n结束');
+
+/* --------------------------------------------------- reasoning models */
+
+console.log('\n[8] 思考模型标签剥离');
+
+const T = (s: string) => stripThinking(s, '<think>', '</think>');
+const T2 = (s: string) => stripThinking(s, '<thinking>', '</thinking>');
+
+check('剥离成对标签', T('<think>想一下</think>答案').text === '答案');
+check('标记为已剥离', T('<think>想一下</think>答案').removed === true);
+check(
+  '剥离多个思考块',
+  T('<think>a</think>一<think>b</think>二').text === '一二',
+  JSON.stringify(T('<think>a</think>一<think>b</think>二').text),
+);
+check('大小写不敏感', T('<THINK>x</THINK>答案').text === '答案');
+// `stripThinking` deliberately does not trim; `stripWrapper` does that. The
+// composed pipeline is what the app actually applies.
+check(
+  '思考内容跨多行（剥离后交由 stripWrapper 收尾）',
+  T('<think>\n第一行\n第二行\n</think>\n\n答案').text.trim() === '答案',
+  JSON.stringify(T('<think>\n第一行\n第二行\n</think>\n\n答案').text),
+);
+check(
+  '完整流水线输出干净结果',
+  stripWrapper(T('<think>\n第一行\n</think>\n\n答案').text) === '答案',
+  JSON.stringify(stripWrapper(T('<think>\n第一行\n</think>\n\n答案').text)),
+);
+check('无标签时原样返回', T('普通回复').text === '普通回复');
+check('无标签时不标记为已剥离', T('普通回复').removed === false);
+check(
+  '未闭合标签时丢弃其后全部内容',
+  T('<think>没写完就断了，答案也没给').text.trim() === '',
+  JSON.stringify(T('<think>没写完就断了，答案也没给').text),
+);
+check(
+  '未闭合标签标记为已剥离',
+  T('<think>断了').removed === true,
+);
+check('自定义标签生效', T2('<thinking>x</thinking>答案').text === '答案');
+check('标签不匹配时不剥离', T('<thinking>x</thinking>答案').text === '<thinking>x</thinking>答案');
+check(
+  '标签为空时不做任何处理',
+  stripThinking('<think>x</think>y', '', '').text === '<think>x</think>y',
+);
+check(
+  '标签含正则元字符也安全',
+  stripThinking('a<b>(c)</b>ok', '<b>', '</b>').text === 'aok',
+);
+check(
+  '正文中的代码块不受影响',
+  T('<think>x</think>看这段:\n```js\ny\n```').text === '看这段:\n```js\ny\n```',
+);
+
+/* ------------------------------------------------------- model listing */
+
+console.log('\n[9] 模型列表解析');
+
+eq('补全 /models', resolveModelsEndpoint('https://api.openai.com/v1'),
+  'https://api.openai.com/v1/models');
+eq('从 chat 路径推导', resolveModelsEndpoint('https://x.com/v1/chat/completions'),
+  'https://x.com/v1/models');
+eq('解析 OpenAI 形式', parseModelIds({ data: [{ id: 'b' }, { id: 'a' }] }), ['a', 'b']);
+eq('解析裸数组形式', parseModelIds(['m2', 'm1']), ['m1', 'm2']);
+eq('去重', parseModelIds(['a', 'a', 'b']), ['a', 'b']);
+eq('跳过无 id 的条目', parseModelIds({ data: [{ id: 'ok' }, { object: 'x' }, null, 5] }), ['ok']);
+eq('空响应返回空数组', parseModelIds({}), []);
+eq('非对象输入返回空数组', parseModelIds('nope' as unknown), []);
+
+/* --------------------------------------------- rewrite prompt integrity */
+
+console.log('\n[10] 改写提示词完整性');
+
+const conversation = [
+  { from: 'human', value: '问题' },
+  { from: 'gpt', value: 'X'.repeat(5000) },
+  { from: 'human', value: '追问' },
+];
+
+// Index 1 is deliberately NOT the last turn.
+const msgs = buildRewriteMessages(DEFAULT_CONFIG, '润色', conversation, 1);
+const prompt = msgs.map((m) => m.content).join('\n');
+
+check(
+  '目标原文完整进入提示词（未被截断）',
+  prompt.includes('X'.repeat(5000)),
+  `目标长度 5000，提示词中是否含完整串: ${prompt.includes('X'.repeat(5000))}`,
+);
+check(
+  '目标被单独复述一遍',
+  prompt.includes('需要修改的内容开始') && prompt.includes('需要修改的内容结束'),
+);
+check(
+  '目标原文只出现一次（不重复占用 token）',
+  prompt.split('X'.repeat(5000)).length - 1 === 1,
+  `出现 ${prompt.split('X'.repeat(5000)).length - 1} 次`,
+);
+// Directly verify the truncation asymmetry rather than inferring it from a
+// total-length heuristic, which is brittle against prompt wording changes.
+const longContext = [
+  { from: 'human', value: 'Y'.repeat(5000) },
+  { from: 'gpt', value: '短目标' },
+];
+const p2 = buildRewriteMessages(DEFAULT_CONFIG, '', longContext, 1)
+  .map((m) => m.content)
+  .join('\n');
+check('非目标轮次被截断（不整段送入）', !p2.includes('Y'.repeat(5000)));
+check('非目标轮次保留开头部分', p2.includes('Y'.repeat(1200)), '应保留前 1200 字符');
+check('非目标轮次确为 1200 字符', p2.includes('Y'.repeat(1200)) && !p2.includes('Y'.repeat(1201)));
+check(
+  '标记与说明一致：目标位置列出但不重复正文',
+  prompt.includes('[2] gpt（目标，完整内容见下方）'),
+  prompt.slice(prompt.indexOf('对话上下文'), prompt.indexOf('对话上下文') + 200),
+);
+check(
+  '不再声称目标一定是最后一条',
+  !prompt.includes('最后标记的一条'),
+);
+check(
+  '明确指出要输出第几条',
+  prompt.includes('第 2 条'),
+);
+check(
+  '系统提示词来自配置',
+  msgs[0].role === 'system' && msgs[0].content === DEFAULT_CONFIG.systemPrompt,
+);
+check(
+  '保留默认思考标签',
+  DEFAULT_CONFIG.thinkingStartTag === '<think>' && DEFAULT_CONFIG.thinkingEndTag === '</think>',
+);
+check(
+  '留空要求时使用默认润色指令',
+  buildRewriteMessages(DEFAULT_CONFIG, '   ', conversation, 0)[1].content.includes('润色'),
+);
 
 /* ----------------------------------------------------------------- done */
 
