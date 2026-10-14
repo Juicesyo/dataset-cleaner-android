@@ -1,8 +1,10 @@
 name: Build Android APK
 
-# Builds a debug APK on every push and on manual dispatch, and publishes it as a
-# downloadable artifact. No local Android SDK is required — the runner provides
-# the SDK, JDK and Gradle.
+# Builds a debug APK and publishes it as a downloadable artifact.
+#
+# `verify` and `build-apk` are deliberately separate, independent jobs: the APK
+# must still be produced when a browser-based check is flaky, and the checks
+# still report their own status.
 
 on:
   push:
@@ -14,28 +16,17 @@ permissions:
   contents: read
 
 jobs:
-  build-apk:
+  # Fast, browser-free checks. Runs in parallel with the APK build.
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 20
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: npm
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Install dependencies
         run: npm ci
@@ -55,11 +46,67 @@ jobs:
       - name: Verify mobile layout and diff contrast
         run: npm run verify:layout
 
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The runner image already ships the Android SDK, so it is used directly
+      # instead of `android-actions/setup-android`.
+      #
+      # That action runs `sdkmanager tools`, but the `tools` package has been
+      # removed from the SDK repository, so the action aborts with
+      # "Failed to find package 'tools'" (exit code 1) before any project step
+      # runs. Installing only the packages this project actually needs avoids
+      # that entirely.
+      - name: Set up Android SDK
+        run: |
+          set -euo pipefail
+
+          echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>}"
+
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            # The runner installs cmdline-tools under a version directory (for
+            # example cmdline-tools/16.0), which is not always symlinked as
+            # `latest`, so search rather than assuming the path.
+            SDKMANAGER="$(find "${ANDROID_HOME}/cmdline-tools" -maxdepth 2 -name sdkmanager -type f 2>/dev/null | head -n1 || true)"
+          fi
+          echo "Using sdkmanager: $SDKMANAGER"
+          test -x "$SDKMANAGER"
+
+          # Accept licences first; this exits non-zero when everything is
+          # already accepted, which is not an error for us.
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+
+          # Capacitor 6 targets compileSdk 34 / build-tools 34.0.0.
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+          echo "--- installed packages ---"
+          "$SDKMANAGER" --list_installed || true
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Build web assets
         run: npm run build
 
       - name: Add Android platform
         run: |
+          set -euo pipefail
           if [ ! -d "android" ]; then
             npx cap add android
           fi
@@ -82,7 +129,7 @@ jobs:
           cp android-plugin/MainActivity.java "$PKG/MainActivity.java"
           echo "--- installed native sources ---"
           ls -la "$PKG"
-          echo "--- verifying plugin registration is present ---"
+          echo "--- verifying plugin registration ---"
           grep -q "registerPlugin(SafPlugin.class)" "$PKG/MainActivity.java"
           echo "OK: MainActivity registers SafPlugin"
 
@@ -92,6 +139,24 @@ jobs:
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Check APK contents
+        run: |
+          set -euo pipefail
+          APK=$(find android/app/build/outputs/apk/debug -name '*.apk' -print -quit)
+          test -n "$APK"
+          echo "APK: $APK"
+          ls -lh "$APK"
+
+          echo "--- verifying the SAF plugin class reached the dex ---"
+          unzip -p "$APK" 'classes*.dex' | strings | grep -q "SafPlugin" \
+            && echo "OK: SafPlugin present in dex" \
+            || { echo "ERROR: SafPlugin missing from dex"; exit 1; }
+
+          echo "--- verifying web assets were bundled ---"
+          unzip -l "$APK" | grep -q "assets/public/index.html" \
+            && echo "OK: web assets bundled" \
+            || { echo "ERROR: web assets missing"; exit 1; }
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
