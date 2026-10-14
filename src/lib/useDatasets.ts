@@ -66,8 +66,26 @@ export interface UseDatasets {
   baselineFor: (sampleId: string) => string[] | undefined;
   changedCount: number;
   resetChanges: () => void;
-  exportJsonl: (fileName: string) => Promise<string>;
+  /** Live (not soft-deleted) samples that a save would write. */
+  liveSampleCount: number;
+  /** Remembered destination, so repeated saves don't re-prompt. */
+  saveTarget: SaveTarget | null;
+  chooseSaveTarget: () => Promise<SaveTarget>;
+  /** Prompts for a destination the first time, then reuses it. */
+  save: (fileName: string) => Promise<string>;
   exportDiffReport: (fileName: string) => Promise<string>;
+  /**
+   * Name of an imported dataset that `fileName` would collide with, or null.
+   * Saving over a source file would destroy the data the user is cleaning, so
+   * the UI blocks it rather than relying on the picker to prevent it.
+   */
+  findSourceConflict: (fileName: string) => string | null;
+}
+
+/** A destination directory the user granted write access to. */
+export interface SaveTarget {
+  uri: string;
+  label: string;
 }
 
 /**
@@ -143,7 +161,11 @@ export function useDatasets(): UseDatasets {
   const baseline = useRef(new Map<string, Turn[]>());
   /** sampleId -> dataset id, rebuilt whenever the sample set changes. */
   const index = useRef(new Map<string, { sample: Sample; dataset: Dataset }>());
-  const outputDir = useRef<{ uri: string; label: string } | null>(null);
+  /**
+   * Remembered save destination. Kept in state (not a ref) because the save
+   * sheet displays the path, and a ref would not re-render it.
+   */
+  const [saveTarget, setSaveTarget] = useState<SaveTarget | null>(null);
 
   // Rebuild the lookup index whenever datasets change.
   index.current = useMemo(() => {
@@ -563,26 +585,55 @@ export function useDatasets(): UseDatasets {
     setRedoStack([]);
   }, []);
 
-  const ensureOutputDir = useCallback(async () => {
-    if (!outputDir.current) {
-      outputDir.current = await getBackend().pickOutputDirectory();
-    }
-    return outputDir.current;
+  /** Samples a save would actually write. */
+  const liveSamples = useMemo(() => allSamples.filter((s) => !s.deleted), [allSamples]);
+
+  const chooseSaveTarget = useCallback(async (): Promise<SaveTarget> => {
+    const picked = await getBackend().pickOutputDirectory();
+    const target: SaveTarget = { uri: picked.uri, label: picked.label };
+    setSaveTarget(target);
+    return target;
   }, []);
 
-  const exportJsonl = useCallback(
-    async (fileName: string): Promise<string> => {
-      const live = allSamples.filter((s) => !s.deleted);
-      if (live.length === 0) throw new Error('没有可导出的数据');
-      const problems = validateForExport(live);
-      if (problems.length) {
-        throw new Error(`导出前校验失败：\n${problems.slice(0, 8).join('\n')}`);
+  /**
+   * Reports an imported dataset whose file name matches `fileName`.
+   *
+   * The native writer replaces an existing file of the same name, so choosing
+   * the dataset's own folder and keeping its name would overwrite the source.
+   * The app never writes back to imported data by design, so the UI uses this to
+   * refuse the save instead of silently destroying the input.
+   */
+  const findSourceConflict = useCallback(
+    (fileName: string): string | null => {
+      const wanted = fileName.trim().toLowerCase();
+      if (!wanted) return null;
+      for (const d of datasets) {
+        if (d.name.trim().toLowerCase() === wanted) return d.name;
       }
-      const dir = await ensureOutputDir();
-      const text = buildJsonl(live);
-      return await getBackend().writeTextToDirectory(dir.uri, fileName, text);
+      return null;
     },
-    [allSamples, ensureOutputDir],
+    [datasets],
+  );
+
+  const save = useCallback(
+    async (fileName: string): Promise<string> => {
+      const conflict = findSourceConflict(fileName);
+      if (conflict) {
+        throw new Error(
+          `「${conflict}」是你导入的原始文件，保存会覆盖它。请换一个文件名，例如 ${suggestName(fileName)}`,
+        );
+      }
+      if (liveSamples.length === 0) throw new Error('没有可保存的数据');
+      const problems = validateForExport(liveSamples);
+      if (problems.length) {
+        throw new Error(`保存前校验失败：\n${problems.slice(0, 8).join('\n')}`);
+      }
+
+      const target = saveTarget ?? (await chooseSaveTarget());
+      const text = buildJsonl(liveSamples);
+      return await getBackend().writeTextToDirectory(target.uri, fileName, text);
+    },
+    [liveSamples, saveTarget, chooseSaveTarget, findSourceConflict],
   );
 
   const exportDiffReport = useCallback(
@@ -646,10 +697,14 @@ export function useDatasets(): UseDatasets {
           );
         }
       }
-      const dir = await ensureOutputDir();
-      return await getBackend().writeTextToDirectory(dir.uri, fileName, lines.join('\n') + '\n');
+      const target = saveTarget ?? (await chooseSaveTarget());
+      return await getBackend().writeTextToDirectory(
+        target.uri,
+        fileName,
+        lines.join('\n') + '\n',
+      );
     },
-    [allSamples, changedCount, ensureOutputDir],
+    [allSamples, changedCount, saveTarget, chooseSaveTarget],
   );
 
   return {
@@ -674,7 +729,20 @@ export function useDatasets(): UseDatasets {
     baselineFor,
     changedCount,
     resetChanges,
-    exportJsonl,
+    liveSampleCount: liveSamples.length,
+    saveTarget,
+    chooseSaveTarget,
+    save,
     exportDiffReport,
+    findSourceConflict,
   };
 }
+
+/** Default output name for `data.jsonl` is `data.cleaned.jsonl`. */
+export function suggestName(fileName: string): string {
+  const trimmed = fileName.trim() || 'dataset.jsonl';
+  const dot = trimmed.lastIndexOf('.');
+  if (dot <= 0) return `${trimmed}.cleaned.jsonl`;
+  return `${trimmed.slice(0, dot)}.cleaned${trimmed.slice(dot)}`;
+}
+

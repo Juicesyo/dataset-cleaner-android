@@ -193,6 +193,10 @@ export function SettingsDrawer({
 
         <section className="field-group">
           <h3>批量修改</h3>
+          <p className="hint">
+            修改要求、作用范围与并发数已移到主界面的「用 AI 批量修改」面板，
+            在那里可以直接看到会影响多少条数据。
+          </p>
           <label>
             修改要求（用户指令）
             <textarea
@@ -202,35 +206,6 @@ export function SettingsDrawer({
               placeholder="例如：修正错别字与标点，去掉无意义的重复，保持原意。"
             />
           </label>
-
-          <label>
-            作用范围
-            <select
-              value={batch.scope}
-              onChange={(e) =>
-                onBatchChange({ ...batch, scope: e.target.value as BatchSettings['scope'] })
-              }
-            >
-              <option value="filtered">当前筛选结果</option>
-              <option value="changed">仅已被手动改动的条目</option>
-              <option value="selected">仅勾选的条目</option>
-            </select>
-          </label>
-
-          <label>
-            修改哪些轮次
-            <select
-              value={batch.targetRole}
-              onChange={(e) =>
-                onBatchChange({ ...batch, targetRole: e.target.value as BatchSettings['targetRole'] })
-              }
-            >
-              <option value="gpt">仅模型回复 (gpt)</option>
-              <option value="human">仅用户输入 (human)</option>
-              <option value="both">两者都改</option>
-            </select>
-          </label>
-
           <label>
             并发数
             <input

@@ -11,6 +11,11 @@ import { DiffHighlight, DiffStat } from './DiffHighlight';
  * two must share identical font metrics, padding and border width or the text
  * visibly misaligns, so both are styled by the same `.edit-surface` rule in
  * the stylesheet.
+ *
+ * Actions carry text labels rather than bare symbols: a `+` glyph does not
+ * convey "insert a new turn here" on a phone, where there is no hover tooltip
+ * to explain it. "还原本轮" is named explicitly to distinguish it from the
+ * toolbar's "还原全部".
  */
 
 export interface TurnEditorProps {
@@ -21,6 +26,10 @@ export interface TurnEditorProps {
   onChange: (value: string) => void;
   onDelete: () => void;
   onInsertAfter: () => void;
+  /** Sends just this turn to the model. */
+  onAskAi: () => void;
+  /** True while this turn has an AI request in flight. */
+  aiBusy?: boolean;
   /** Highlighted when the user jumped here from search. */
   focused?: boolean;
   /** Read-only when the row is soft-deleted. */
@@ -34,6 +43,8 @@ export function TurnEditor({
   onChange,
   onDelete,
   onInsertAfter,
+  onAskAi,
+  aiBusy,
   focused,
   disabled,
 }: TurnEditorProps) {
@@ -56,7 +67,7 @@ export function TurnEditor({
     >
       <div className="turn-head">
         <span className={`role-badge ${isUser ? 'role-user' : 'role-model'}`}>{turn.from}</span>
-        <span className="turn-index">#{index + 1}</span>
+        <span className="turn-index">第 {index + 1} 轮</span>
         {changed && (
           <>
             <span className="changed-dot" title="已修改" />
@@ -64,14 +75,23 @@ export function TurnEditor({
           </>
         )}
         <div className="turn-actions">
+          <button
+            type="button"
+            className="mini ai"
+            onClick={onAskAi}
+            disabled={disabled || aiBusy}
+            title="只把这一个轮次发给 AI 按「修改要求」改写"
+          >
+            {aiBusy ? 'AI 改写中…' : 'AI 改写'}
+          </button>
           {changed && (
             <button
               type="button"
               className="mini"
               onClick={() => setShowDiff((v) => !v)}
-              title="切换改动高亮"
+              title="切换改动高亮显示"
             >
-              {showDiff ? '高亮' : '纯文本'}
+              {showDiff ? '关闭高亮' : '显示改动'}
             </button>
           )}
           <button
@@ -79,12 +99,18 @@ export function TurnEditor({
             className="mini"
             onClick={() => onChange(originalValue ?? '')}
             disabled={!changed}
-            title="还原这一轮"
+            title="把这一轮恢复成导入时的内容"
           >
-            还原
+            还原本轮
           </button>
-          <button type="button" className="mini" onClick={onInsertAfter} title="在下方插入一轮">
-            +
+          <button
+            type="button"
+            className="mini"
+            onClick={onInsertAfter}
+            disabled={disabled}
+            title="在这一轮下方插入一个新的轮次"
+          >
+            ＋ 插入轮次
           </button>
           <button
             type="button"
@@ -93,7 +119,7 @@ export function TurnEditor({
             disabled={disabled}
             title="删除这一轮"
           >
-            ×
+            删除轮次
           </button>
         </div>
       </div>

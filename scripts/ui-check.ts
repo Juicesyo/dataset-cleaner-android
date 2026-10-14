@@ -211,7 +211,7 @@ async function main(): Promise<void> {
 
   console.log('\n[5] 撤销与重做');
   // Blur by focusing a plain field. Clicking `.toolbar` would land its centre
-  // point on the "还原" button at this viewport width and reset everything.
+  // point on the "还原全部" button at this viewport width and reset everything.
   await page.locator('.search-input').click();
   await page.waitForTimeout(400);
   check(
@@ -296,9 +296,9 @@ async function main(): Promise<void> {
   await page.waitForSelector('.sample-card.expanded .edit-surface');
   await typeInto(page, '.sample-card.expanded .edit-surface >> nth=1', '杭州以西湖闻名。');
 
-  await page.click('.toolbar button:has-text("导出")');
+  await page.click('.toolbar button:has-text("另存为")');
   await page.waitForSelector('.sheet .sheet-actions', { timeout: 5000 });
-  await page.click('button:has-text("保存清理后的 JSONL")');
+  await page.click('.sheet-actions button.primary');
   await page.waitForTimeout(800);
 
   const captured = (await page.evaluate('window.__captured')) as string | null;
@@ -352,9 +352,14 @@ async function main(): Promise<void> {
   console.log('\n[9] 还原改动');
   await runResetChecks(browser, url, datasetPath, errors);
 
+  /* ---------------------------------------------- save guard + clarity */
+
+  console.log('\n[10] 保存目标保护与操作可读性');
+  await runSaveAndClarityChecks(browser, url, datasetPath, errors);
+
   /* ------------------------------------------------------- no JS errors */
 
-  console.log('\n[10] 运行时错误检查');
+  console.log('\n[11] 运行时错误检查');
   // Ignore the aborted-download noise the export blob can trigger.
   const realErrors = errors.filter(
     (e) => !/Download the React DevTools|favicon/i.test(e),
@@ -409,7 +414,7 @@ async function runResetChecks(
       .evaluateAll((els) => els.map((e) => (e as HTMLTextAreaElement).value));
   };
 
-  const resetButton = (p: Page) => p.locator('.toolbar button:has-text("还原")');
+  const resetButton = (p: Page) => p.locator('.toolbar button:has-text("还原全部")');
 
   // --- a text edit is reverted -------------------------------------------
   {
@@ -461,7 +466,7 @@ async function runResetChecks(
     await p
       .locator('.sample-card.expanded .turn')
       .first()
-      .locator('button[title="在下方插入一轮"]')
+      .locator('button:has-text("插入轮次")')
       .click();
     await p.locator('.search-input').click();
     await p.waitForTimeout(400);
@@ -501,6 +506,94 @@ async function runResetChecks(
     check('还原移除复制的样本', (await p.locator('.sample-card').count()) === 3);
     await p.context().close();
   }
+}
+
+/**
+ * Covers the two things that were previously unclear or unsafe:
+ *
+ *  - the save sheet must refuse a file name that matches an imported dataset,
+ *    because the native writer replaces a same-named file and would destroy the
+ *    input the user is still cleaning
+ *  - the per-turn actions and the batch panel must state, in words, what they
+ *    do and how many turns a run will touch
+ */
+async function runSaveAndClarityChecks(
+  browser: Browser,
+  url: string,
+  datasetPath: string,
+  errors: string[],
+): Promise<void> {
+  const ctx = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+  });
+  const p = await ctx.newPage();
+  p.on('pageerror', (e) => errors.push(e.message));
+  p.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text());
+  });
+  await p.goto(url, { waitUntil: 'networkidle' });
+  p.once('filechooser', (fc) => void fc.setFiles([datasetPath]));
+  await p.click('.toolbar button:has-text("导入")');
+  await p.click('.sheet-actions button:has-text("选择文件")');
+  await p.waitForSelector('.sample-card');
+
+  // --- batch panel states its scope before spending tokens ---------------
+  const batchText = (await p.textContent('.batch-panel')) ?? '';
+  check('批量面板标题说明用途', batchText.includes('用 AI 批量修改'));
+  check('批量面板显示将影响的轮次数', /共\s*\d+\s*个/.test(batchText), batchText.slice(0, 120));
+  check('批量面板内可见范围选择', (await p.locator('.batch-options select').count()) === 2);
+  check(
+    '开始按钮写明轮次数',
+    /开始修改\s*\d+\s*个轮次/.test((await p.textContent('.batch-run')) ?? ''),
+    (await p.textContent('.batch-run')) ?? '',
+  );
+
+  // --- per-turn actions are labelled, not symbols -----------------------
+  await p.locator('.sample-card').first().locator('.sample-head').click();
+  await p.waitForSelector('.sample-card.expanded .edit-surface');
+  const turnText = (await p.textContent('.turn-head')) ?? '';
+  check('轮次操作用文字而非符号', !/(^|\s)\+\s*$/.test(turnText) && !turnText.includes('×'));
+  check('有「插入轮次」按钮', (await p.locator('button:has-text("插入轮次")').count()) > 0);
+  check('有「删除轮次」按钮', (await p.locator('button:has-text("删除轮次")').count()) > 0);
+  check('有「还原本轮」按钮', (await p.locator('button:has-text("还原本轮")').count()) > 0);
+  check('有单轮「AI 改写」按钮', (await p.locator('button:has-text("AI 改写")').count()) > 0);
+
+  // --- save sheet describes the destination and the payload -------------
+  await p.click('.toolbar button:has-text("另存为")');
+  await p.waitForSelector('.sheet .sheet-actions');
+  const saveText = (await p.textContent('.sheet')) ?? '';
+  check('保存面板显示保存位置', saveText.includes('保存位置'));
+  check('保存面板说明不改原文件', saveText.includes('原始文件不会被修改'));
+  check('保存面板写明将写入条数', /将写入\s*3\s*条/.test(saveText), saveText.slice(0, 160));
+
+  // --- a name matching a source file is refused -------------------------
+  const nameInput = p.locator('.sheet input[type="text"]');
+  await nameInput.fill('sample.jsonl');
+  await p.waitForTimeout(300);
+  check('与原始文件同名时出现警告', (await p.locator('.warn-box').count()) === 1);
+  check(
+    '警告说明不能覆盖原文件',
+    ((await p.textContent('.warn-box')) ?? '').includes('不能覆盖'),
+  );
+  check(
+    '同名时保存按钮被禁用',
+    await p.locator('.sheet-actions button.primary').isDisabled(),
+  );
+
+  // The suggested replacement must clear the conflict.
+  await p.click('.warn-box button');
+  await p.waitForTimeout(300);
+  const replaced = await nameInput.inputValue();
+  check('一键改用不冲突的文件名', replaced === 'sample.cleaned.jsonl', replaced);
+  check('改名后警告消失', (await p.locator('.warn-box').count()) === 0);
+  check(
+    '改名后保存按钮可用',
+    !(await p.locator('.sheet-actions button.primary').isDisabled()),
+  );
+
+  await ctx.close();
 }
 
 main()

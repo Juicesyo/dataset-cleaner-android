@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useDatasets } from './lib/useDatasets';
+import { suggestName, useDatasets } from './lib/useDatasets';
 import { useBatch } from './lib/useBatch';
 import { loadConfig, SettingsDrawer, type BatchSettings } from './components/SettingsDrawer';
 import { SampleCard } from './components/SampleCard';
-import { chat, type LlmConfig } from './lib/llm';
+import { buildRewriteMessages, chat, type LlmConfig } from './lib/llm';
 import type { Sample } from './types';
 import { getBackend } from './lib/fs';
 import { Toolbar } from './components/Toolbar';
@@ -45,7 +45,9 @@ export default function App() {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
-  const [exportOpen, setExportOpen] = useState(false);
+  const [saveOpen, setSaveOpen] = useState(false);
+  /** Turn keys (`sampleId:turnIndex`) with an in-flight single-turn AI rewrite. */
+  const [aiBusy, setAiBusy] = useState<Set<string>>(new Set());
 
   const notify = useCallback((kind: 'ok' | 'err', text: string) => {
     setToast({ kind, text });
@@ -116,6 +118,31 @@ export default function App() {
   }, [batchSettings.scope, store, selected, filtered]);
 
   /**
+   * How many individual turns the batch would send to the model.
+   *
+   * Shown next to the button because "修改 N 条" alone hides the real cost: one
+   * sample can hold several eligible turns, and the request count — not the
+   * sample count — is what drives the time and the token spend.
+   *
+   * Mirrors the job selection in `useBatch.start`; if the two ever diverge the
+   * preview would lie, so both filter on the same role and skip empty turns.
+   */
+  const batchTurnCount = useMemo(() => {
+    let n = 0;
+    for (const s of batchTargets) {
+      if (s.deleted) continue;
+      for (const turn of s.conversations) {
+        const isGpt = turn.from === 'gpt' || turn.from === 'assistant';
+        if (batchSettings.targetRole === 'gpt' && !isGpt) continue;
+        if (batchSettings.targetRole === 'human' && isGpt) continue;
+        if (turn.value.trim().length === 0) continue;
+        n++;
+      }
+    }
+    return n;
+  }, [batchTargets, batchSettings.targetRole]);
+
+  /**
    * Keyboard shortcuts, kept in a ref so the listener is registered once.
    *
    * `store` is a fresh object on every render, so listing it as a dependency
@@ -178,15 +205,74 @@ export default function App() {
     }
   };
 
-  const doExport = async (fileName: string, withReport: boolean) => {
-    setExportOpen(false);
+  /**
+   * Saves every pending change into the chosen JSONL file.
+   *
+   * The imported datasets are only ever read, never written back to, so this
+   * always produces a new file. `store.save` additionally refuses a name that
+   * matches an imported file, since the native writer would replace it.
+   */
+  const doSave = async (fileName: string): Promise<void> => {
     try {
-      const path = withReport
-        ? await store.exportDiffReport(fileName)
-        : await store.exportJsonl(fileName);
-      notify('ok', `已保存到 ${path}`);
+      const path = await store.save(fileName);
+      setSaveOpen(false);
+      notify('ok', `已保存 ${store.liveSampleCount} 条到 ${path}`);
     } catch (err) {
       notify('err', `保存失败: ${(err as Error).message}`);
+    }
+  };
+
+  /**
+   * Saves the change log beside the data, for reviewing what a cleaning pass
+   * altered. It is a separate file so it can never collide with the dataset.
+   */
+  const doSaveReport = async (fileName: string): Promise<void> => {
+    try {
+      const path = await store.exportDiffReport(fileName);
+      notify('ok', `改动记录已保存到 ${path}`);
+    } catch (err) {
+      notify('err', `保存失败: ${(err as Error).message}`);
+    }
+  };
+
+  /**
+   * Rewrites a single turn with the model, using the same instruction as the
+   * batch run so the two paths behave identically.
+   */
+  const rewriteTurn = async (sampleId: string, turnIndex: number): Promise<void> => {
+    const found = store.sampleById(sampleId);
+    if (!found) return;
+    if (!config.apiKey.trim()) {
+      notify('err', '请先在设置中填写 API Key');
+      setSettingsOpen(true);
+      return;
+    }
+
+    const key = `${sampleId}:${turnIndex}`;
+    setAiBusy((prev) => new Set(prev).add(key));
+    try {
+      const messages = buildRewriteMessages(
+        config,
+        batchSettings.instruction,
+        found.sample.conversations,
+        turnIndex,
+      );
+      const out = await chat(config, messages);
+      const before = found.sample.conversations[turnIndex]?.value ?? '';
+      if (out.trim() === before.trim()) {
+        notify('ok', 'AI 认为这一轮无需修改');
+      } else {
+        store.updateTurn(sampleId, turnIndex, out, undefined);
+        notify('ok', 'AI 已改写这一轮（可撤销）');
+      }
+    } catch (err) {
+      notify('err', `AI 改写失败: ${(err as Error).message}`);
+    } finally {
+      setAiBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     }
   };
 
@@ -244,10 +330,13 @@ export default function App() {
         sampleCount={store.allSamples.length}
         filteredCount={filtered.length}
         changedCount={store.changedCount}
+        liveSampleCount={store.liveSampleCount}
+        saveTargetLabel={store.saveTarget?.label ?? null}
         canUndo={store.canUndo}
         canRedo={store.canRedo}
         onOpenImport={() => setImportOpen(true)}
-        onOpenExport={() => setExportOpen(true)}
+        onSave={() => void doSave(defaultFileName())}
+        onOpenSave={() => setSaveOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
         onUndo={() => store.undo() && notify('ok', '已撤销')}
         onRedo={() => store.redo() && notify('ok', '已重做')}
@@ -272,9 +361,11 @@ export default function App() {
         onSettingsChange={setBatchSettings}
         progress={batch.progress}
         targetCount={batchTargets.length}
+        targetTurnCount={batchTurnCount}
         onStart={runBatch}
         onCancel={batch.cancel}
         onJumpTo={jumpTo}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <main className="list" ref={listRef}>
@@ -324,6 +415,8 @@ export default function App() {
               onTurnChange={(turnIndex, value) =>
                 store.updateTurn(sample.id, turnIndex, value, `${sample.id}:${turnIndex}`)
               }
+              onAskAi={(turnIndex) => void rewriteTurn(sample.id, turnIndex)}
+              aiBusyTurns={aiBusy}
               onDeleteTurn={(turnIndex) => store.deleteTurn(sample.id, turnIndex)}
               onInsertTurn={(afterIndex) => store.addTurn(sample.id, afterIndex)}
               onDuplicate={() => store.duplicateSample(sample.id)}
@@ -357,12 +450,19 @@ export default function App() {
         onRemove={(id) => store.removeDataset(id)}
       />
 
-      <ExportSheet
-        open={exportOpen}
-        onClose={() => setExportOpen(false)}
-        defaultName={defaultExportName()}
-        onExport={doExport}
+      <SaveSheet
+        open={saveOpen}
+        onClose={() => setSaveOpen(false)}
+        defaultName={defaultFileName()}
+        onSave={doSave}
+        onSaveReport={doSaveReport}
         backendKind={getBackend().kind}
+        targetLabel={store.saveTarget?.label ?? null}
+        onChooseTarget={() => store.chooseSaveTarget()}
+        liveSampleCount={store.liveSampleCount}
+        changedCount={store.changedCount}
+        findConflict={store.findSourceConflict}
+        onNotify={notify}
       />
 
       <SettingsDrawer
@@ -380,14 +480,19 @@ export default function App() {
   );
 }
 
-function defaultExportName(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `cleaned_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}.jsonl`;
+/**
+ * Default output file name, derived from the imported files when possible so
+ * the result is recognisable next to its source.
+ *
+ * The name never equals a source name: it carries a `.cleaned` marker, which is
+ * what keeps a careless save from overwriting the imported dataset.
+ */
+function defaultFileName(): string {
+  return 'dataset.cleaned.jsonl';
 }
 
 /* ------------------------------------------------------------------ */
-/* Import / export sheets                                              */
+/* Import / save sheets                                                */
 /* ------------------------------------------------------------------ */
 
 interface ImportSheetProps {
@@ -448,16 +553,47 @@ function ImportSheet({ open, onClose, onPick, datasets, onRemove }: ImportSheetP
   );
 }
 
-interface ExportSheetProps {
+interface SaveSheetProps {
   open: boolean;
   onClose: () => void;
   defaultName: string;
-  onExport: (fileName: string, withReport: boolean) => void;
+  onSave: (fileName: string) => Promise<void>;
+  onSaveReport: (fileName: string) => Promise<void>;
   backendKind: 'capacitor' | 'browser';
+  /** Remembered destination label, or null when none chosen yet. */
+  targetLabel: string | null;
+  onChooseTarget: () => Promise<{ label: string }>;
+  liveSampleCount: number;
+  changedCount: number;
+  /** Returns the imported file name that `fileName` would overwrite. */
+  findConflict: (fileName: string) => string | null;
+  onNotify: (kind: 'ok' | 'err', text: string) => void;
 }
 
-function ExportSheet({ open, onClose, defaultName, onExport, backendKind }: ExportSheetProps) {
+/**
+ * Save destination sheet.
+ *
+ * Shows where the file will go and how much will be written before committing,
+ * and refuses a name that matches an imported dataset: the native writer
+ * replaces a same-named file, so allowing it would destroy the input the user is
+ * still working from.
+ */
+function SaveSheet({
+  open,
+  onClose,
+  defaultName,
+  onSave,
+  onSaveReport,
+  backendKind,
+  targetLabel,
+  onChooseTarget,
+  liveSampleCount,
+  changedCount,
+  findConflict,
+  onNotify,
+}: SaveSheetProps) {
   const [name, setName] = useState(defaultName);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (open) setName(defaultName);
@@ -465,18 +601,68 @@ function ExportSheet({ open, onClose, defaultName, onExport, backendKind }: Expo
 
   if (!open) return null;
 
-  const safeName = name.trim() || defaultName;
-  const finalName = safeName.endsWith('.jsonl') ? safeName : `${safeName}.jsonl`;
+  const rawName = name.trim();
+  const finalName = !rawName ? defaultName : rawName.endsWith('.jsonl') ? rawName : `${rawName}.jsonl`;
+  const conflict = findConflict(finalName);
+  const reportName = finalName.replace(/\.jsonl$/, '.diff.jsonl');
+
+  const pickTarget = async () => {
+    try {
+      const t = await onChooseTarget();
+      onNotify('ok', `保存目录已设为 ${t.label}`);
+    } catch (err) {
+      onNotify('err', `选择目录失败: ${(err as Error).message}`);
+    }
+  };
+
+  const runSave = async () => {
+    setBusy(true);
+    try {
+      await onSave(finalName);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runReport = async () => {
+    setBusy(true);
+    try {
+      await onSaveReport(reportName);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="drawer-backdrop" onClick={onClose}>
       <aside className="drawer sheet" onClick={(e) => e.stopPropagation()}>
         <header className="drawer-head">
-          <h2>导出</h2>
+          <h2>保存</h2>
           <button type="button" className="mini" onClick={onClose}>
             关闭
           </button>
         </header>
+
+        <section className="field-group">
+          <h3>保存位置</h3>
+          <div className="target-row">
+            <span className="target-path" title={targetLabel ?? undefined}>
+              {backendKind === 'browser'
+                ? '浏览器下载目录'
+                : targetLabel ?? '尚未选择目录'}
+            </span>
+            {backendKind === 'capacitor' && (
+              <button type="button" className="mini" onClick={pickTarget}>
+                {targetLabel ? '更改' : '选择目录'}
+              </button>
+            )}
+          </div>
+          <p className="hint">
+            {backendKind === 'capacitor'
+              ? '只写入你选择的目录，导入的原始文件不会被修改。'
+              : '浏览器会下载到默认下载目录；导入的原始文件不会被修改。'}
+          </p>
+        </section>
 
         <label className="field-group">
           文件名
@@ -484,27 +670,55 @@ function ExportSheet({ open, onClose, defaultName, onExport, backendKind }: Expo
             type="text"
             value={name}
             spellCheck={false}
+            autoComplete="off"
             onChange={(e) => setName(e.target.value)}
           />
         </label>
 
-        <p className="hint">
-          {backendKind === 'capacitor'
-            ? '首次导出会请求你选择一个输出目录，之后一直保存到该目录。'
-            : '浏览器环境会下载到默认下载目录。'}
-        </p>
+        {conflict && (
+          <div className="warn-box">
+            <strong>「{conflict}」是你导入的原始文件，不能覆盖。</strong>
+            <p>
+              保存会写到新文件，原始数据始终保持不变。建议改用：
+              <code>{suggestName(finalName)}</code>
+            </p>
+            <button
+              type="button"
+              className="mini"
+              onClick={() => setName(suggestName(finalName))}
+            >
+              使用这个文件名
+            </button>
+          </div>
+        )}
+
+        <div className="save-summary">
+          将写入 <b>{liveSampleCount}</b> 条（已改动 {changedCount} 条）；
+          标记删除的条目不会写入。
+        </div>
 
         <div className="sheet-actions">
-          <button type="button" className="primary big" onClick={() => onExport(finalName, false)}>
-            保存清理后的 JSONL
+          <button
+            type="button"
+            className="primary big"
+            onClick={runSave}
+            disabled={busy || Boolean(conflict) || liveSampleCount === 0}
+          >
+            {busy ? '保存中…' : `保存到 ${finalName}`}
           </button>
-          <button type="button" className="mini big" onClick={() => onExport(finalName.replace(/\.jsonl$/, '.diff.jsonl'), true)}>
-            导出改动记录 (diff)
+          <button
+            type="button"
+            className="mini big"
+            onClick={runReport}
+            disabled={busy || changedCount === 0}
+          >
+            另存改动记录 ({reportName})
           </button>
         </div>
 
         <p className="hint">
-          标记为删除的条目不会写入清理后的文件；<code>_input_fingerprint</code> 会原样保留。
+          保存为 UTF-8 JSONL，每行一条 ShareGPT 记录；<code>_input_fingerprint</code>
+          与其他未知字段原样保留。
         </p>
       </aside>
     </div>

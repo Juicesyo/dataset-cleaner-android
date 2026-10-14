@@ -18,6 +18,10 @@ export interface SampleCardProps {
   expanded: boolean;
   onToggle: () => void;
   onTurnChange: (turnIndex: number, value: string) => void;
+  /** Sends a single turn to the model. */
+  onAskAi: (turnIndex: number) => void;
+  /** Turn keys (`sampleId:turnIndex`) with an in-flight AI request. */
+  aiBusyTurns: Set<string>;
   onDeleteTurn: (turnIndex: number) => void;
   onInsertTurn: (afterIndex: number) => void;
   onDuplicate: () => void;
@@ -34,6 +38,8 @@ export function SampleCard({
   expanded,
   onToggle,
   onTurnChange,
+  onAskAi,
+  aiBusyTurns,
   onDeleteTurn,
   onInsertTurn,
   onDuplicate,
@@ -116,7 +122,9 @@ export function SampleCard({
               index={i}
               originalValue={baseline?.[i]}
               disabled={sample.deleted}
+              aiBusy={aiBusyTurns.has(`${sample.id}:${i}`)}
               onChange={(v) => onTurnChange(i, v)}
+              onAskAi={() => onAskAi(i)}
               onDelete={() => onDeleteTurn(i)}
               onInsertAfter={() => onInsertTurn(i)}
             />
