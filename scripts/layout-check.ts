@@ -90,21 +90,128 @@ await page.waitForSelector('.sample-card.expanded .edit-surface');
 const sel = '.sample-card.expanded .edit-surface >> nth=1';
 const h1 = await page.locator(sel).evaluate((el) => el.getBoundingClientRect().height);
 
-await typeInto(page, sel, Array.from({ length: 25 }, (_, i) => `第 ${i + 1} 行内容，用于测试自动增高。`).join('\n'));
+// Modest growth: still below the viewport-relative cap, so the box must fit the
+// content exactly. The capped case is covered in [2b].
+await typeInto(
+  page,
+  sel,
+  Array.from({ length: 8 }, (_, i) => `第 ${i + 1} 行内容，用于测试自动增高。`).join('\n'),
+);
 await page.waitForTimeout(400);
 const h2 = await page.locator(sel).evaluate((el) => el.getBoundingClientRect().height);
 check('内容变多时编辑框增高', h2 > h1, `${h1} -> ${h2}`);
 
-// It must grow, not scroll internally, up to the cap.
+// Below the cap it must fit the content exactly, with no internal scrolling.
 const scrollInfo = await page.locator(sel).evaluate((el) => ({
   scrollH: el.scrollHeight,
   clientH: el.clientHeight,
+  overflowY: getComputedStyle(el).overflowY,
 }));
 check(
-  '增高到内容高度（无内部滚动）',
-  Math.abs(scrollInfo.scrollH - scrollInfo.clientH) <= 2,
+  '未达上限时精确贴合内容（无内部滚动）',
+  scrollInfo.scrollH === scrollInfo.clientH && scrollInfo.overflowY === 'hidden',
   JSON.stringify(scrollInfo),
 );
+
+/* ------------------------------------------- overflow and scroll syncing */
+
+console.log('\n[2b] 超长文本与内部滚动');
+{
+  /** Sets a controlled textarea the way a paste would. */
+  const setValue = async (text: string) => {
+    await page.evaluate(
+      ({ sel: s, val }) => {
+        const ta = document.querySelector(s) as HTMLTextAreaElement | null;
+        if (!ta) throw new Error('textarea not found');
+        const setter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          'value',
+        )?.set;
+        setter?.call(ta, val);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      },
+      { sel: '.sample-card.expanded .edit-surface', val: text },
+    );
+    await page.waitForTimeout(500);
+  };
+
+  const geom = () =>
+    page.evaluate(
+      `(() => {
+        const stack = document.querySelector('.sample-card.expanded .edit-stack');
+        const ta = stack.querySelector('.edit-surface');
+        const pre = stack.querySelector('.diff-backdrop');
+        return {
+          clientH: ta.clientHeight,
+          scrollH: ta.scrollHeight,
+          clientW: ta.clientWidth,
+          scrollW: ta.scrollWidth,
+          overflowY: getComputedStyle(ta).overflowY,
+          preClientH: pre ? pre.clientHeight : null,
+          preScrollH: pre ? pre.scrollHeight : null,
+          preScrollTop: pre ? pre.scrollTop : null,
+          taScrollTop: ta.scrollTop,
+        };
+      })()`,
+    );
+
+  // A trailing newline used to leave the last line clipped by the border,
+  // because `height = scrollHeight` omits the border under border-box sizing.
+  await setValue('第一行\n第二行\n');
+  const nl = await geom();
+  check(
+    '结尾换行不被边框裁切',
+    nl.clientH >= nl.scrollH,
+    `client=${nl.clientH} scroll=${nl.scrollH}`,
+  );
+
+  // Text far past the cap: the box must stay within the viewport, not grow to
+  // the old fixed 2000px ceiling, and must scroll instead of clipping silently.
+  const huge = Array.from(
+    { length: 400 },
+    (_, i) => `第 ${i + 1} 行：用于测试超长内容的一段中文，包含标点。`,
+  ).join('\n');
+  await setValue(huge);
+  const big = await geom();
+  const vh = await page.evaluate('window.innerHeight');
+  check(
+    '超长文本时高度受视口约束',
+    big.clientH <= vh * 0.7,
+    `client=${big.clientH} viewport=${vh}`,
+  );
+  check('超出后改为内部滚动', big.overflowY === 'auto', big.overflowY);
+
+  // Scrolling the box must carry the colour layer with it, or the highlight
+  // marks the wrong lines.
+  await page.evaluate(`(() => {
+    const ta = document.querySelector('.sample-card.expanded .edit-surface');
+    ta.scrollTop = 800;
+    ta.dispatchEvent(new Event('scroll'));
+  })()`);
+  await page.waitForTimeout(300);
+  const scrolled = await geom();
+  check(
+    '彩色层随编辑框一起滚动',
+    scrolled.preScrollTop === scrolled.taScrollTop && scrolled.taScrollTop > 0,
+    `ta=${scrolled.taScrollTop} backdrop=${scrolled.preScrollTop}`,
+  );
+  check(
+    '两图层换行宽度一致（scrollHeight 相同）',
+    Math.abs((scrolled.preScrollH ?? 0) - scrolled.scrollH) <= 2,
+    `ta=${scrolled.scrollH} backdrop=${scrolled.preScrollH}`,
+  );
+
+  // A very long unbroken token must wrap, not push the box sideways.
+  await setValue('B'.repeat(3000));
+  const long = await geom();
+  check(
+    '超长无空格文本不产生水平溢出',
+    long.scrollW <= long.clientW + 1,
+    `client=${long.clientW} scroll=${long.scrollW}`,
+  );
+
+  await setValue('杭州是浙江省的省会，以西湖闻名。');
+}
 
 /* -------------------------------------------------------- diff alignment */
 

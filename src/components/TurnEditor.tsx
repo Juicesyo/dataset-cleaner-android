@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Turn } from '../types';
 import { diffText } from '../lib/diff';
 import { AutoGrowTextarea } from './AutoGrowTextarea';
@@ -50,6 +50,8 @@ export function TurnEditor({
 }: TurnEditorProps) {
   const [showDiff, setShowDiff] = useState(true);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const backdropRef = useRef<HTMLPreElement | null>(null);
 
   const changed = originalValue !== undefined && originalValue !== turn.value;
 
@@ -57,6 +59,34 @@ export function TurnEditor({
     () => (changed && showDiff ? diffText(originalValue ?? '', turn.value) : []),
     [changed, showDiff, originalValue, turn.value],
   );
+
+  /**
+   * Keeps the colour layer locked to the textarea.
+   *
+   * The mirror is absolutely positioned and never scrolls on its own, so once
+   * the box caps out and scrolls internally the highlight would otherwise stay
+   * pinned to the top and mark the wrong lines. A classic (space-taking)
+   * scrollbar also narrows the textarea's content box, which would make the two
+   * layers wrap differently, so the same width is reserved on the mirror.
+   */
+  const syncBackdrop = useCallback(() => {
+    const ta = textareaRef.current;
+    const pre = backdropRef.current;
+    if (!ta || !pre) return;
+
+    const cs = getComputedStyle(ta);
+    const borderX =
+      (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
+    const scrollbarW = Math.max(0, ta.offsetWidth - ta.clientWidth - borderX);
+
+    pre.style.paddingRight = `calc(${cs.paddingRight} + ${scrollbarW}px)`;
+    pre.scrollTop = ta.scrollTop;
+    pre.scrollLeft = ta.scrollLeft;
+  }, []);
+
+  useLayoutEffect(() => {
+    syncBackdrop();
+  }, [segments, turn.value, syncBackdrop]);
 
   const isUser = turn.from === 'human' || turn.from === 'user';
 
@@ -127,7 +157,7 @@ export function TurnEditor({
       <div className="edit-stack">
         {/* The coloured layer only exists when showing a diff, so the plain
             case costs nothing and renders with perfect default fidelity. */}
-        {segments.length > 0 && <DiffHighlight segments={segments} />}
+        {segments.length > 0 && <DiffHighlight ref={backdropRef} segments={segments} />}
         <AutoGrowTextarea
           value={turn.value}
           onChange={onChange}
@@ -136,6 +166,9 @@ export function TurnEditor({
           className={`edit-surface ${segments.length > 0 ? 'overlay' : 'plain'}`}
           placeholder="（空）"
           minHeight={64}
+          textareaRef={textareaRef}
+          onFit={syncBackdrop}
+          onScroll={syncBackdrop}
         />
       </div>
     </div>

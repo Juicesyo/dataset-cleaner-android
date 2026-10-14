@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { forwardRef, useMemo } from 'react';
 import type { DiffSegment } from '../lib/diff';
 
 /**
@@ -8,7 +8,12 @@ import type { DiffSegment } from '../lib/diff';
  * textarea and paints the coloured spans, while the textarea itself is
  * transparent. This keeps a real, native editing experience (caret, selection,
  * IME composition, soft-keyboard behaviour) while still showing live colour,
- * which a contenteditable-based approach would break on Android.
+ * which a contenteditable-based approach would break.
+ *
+ * Because the mirror never receives the user's scrolling, its owner must copy
+ * the textarea's `scrollTop` onto it. Without that the colours stay pinned to
+ * the top of the box while the text scrolls away underneath, so the highlight
+ * ends up marking the wrong lines.
  */
 
 export interface DiffHighlightProps {
@@ -16,25 +21,27 @@ export interface DiffHighlightProps {
   className?: string;
 }
 
-export function DiffHighlight({ segments, className }: DiffHighlightProps) {
-  const spans = useMemo(
-    () =>
-      segments.map((seg, i) => (
-        <span key={i} className={`seg seg-${seg.kind}`}>
-          {seg.text}
-        </span>
-      )),
-    [segments],
-  );
+export const DiffHighlight = forwardRef<HTMLPreElement, DiffHighlightProps>(
+  function DiffHighlight({ segments, className }, ref) {
+    const spans = useMemo(
+      () =>
+        segments.map((seg, i) => (
+          <span key={i} className={`seg seg-${seg.kind}`}>
+            {seg.text}
+          </span>
+        )),
+      [segments],
+    );
 
-  return (
-    <pre className={`diff-backdrop ${className ?? ''}`} aria-hidden="true">
-      {spans}
-      {/* Trailing newline keeps the last line's height equal to the textarea's. */}
-      {'\n'}
-    </pre>
-  );
-}
+    return (
+      <pre ref={ref} className={`diff-backdrop ${className ?? ''}`} aria-hidden="true">
+        {spans}
+        {/* Trailing newline keeps the last line's height equal to the textarea's. */}
+        {'\n'}
+      </pre>
+    );
+  },
+);
 
 /** Small chip summarising how much a turn changed. */
 export function DiffStat({ segments }: { segments: DiffSegment[] }) {
