@@ -78,25 +78,50 @@ jobs:
           echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
           echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>}"
 
-          SDKMANAGER="$(command -v sdkmanager || true)"
-          if [ -z "$SDKMANAGER" ]; then
-            # The runner installs cmdline-tools under a version directory (for
-            # example cmdline-tools/16.0), which is not always symlinked as
-            # `latest`, so search rather than assuming the path.
-            SDKMANAGER="$(find "${ANDROID_HOME}/cmdline-tools" -maxdepth 2 -name sdkmanager -type f 2>/dev/null | head -n1 || true)"
+          # `sdkmanager` is not on PATH on this image, and cmdline-tools lives
+          # under a version directory (for example cmdline-tools/16.0) rather
+          # than being symlinked as `latest`. Resolve it by globbing instead of
+          # assuming a path, so a layout change cannot break this step.
+          SDKMANAGER=""
+          for candidate in \
+            "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "${ANDROID_HOME}"/cmdline-tools/*/bin/sdkmanager \
+            "$(command -v sdkmanager 2>/dev/null || true)"
+          do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+              SDKMANAGER="$candidate"
+              break
+            fi
+          done
+
+          if [ -n "$SDKMANAGER" ]; then
+            echo "Using sdkmanager: $SDKMANAGER"
+
+            # Accepting licences exits non-zero once everything is accepted,
+            # which is not an error here.
+            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+
+            # Capacitor 6 compiles against compileSdk 34 / build-tools 34.0.0.
+            # A non-zero result is tolerated because the image may already ship
+            # these; the directory checks below are the real gate.
+            yes | "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" \
+              || echo "WARNING: sdkmanager install did not complete cleanly"
+          else
+            echo "WARNING: sdkmanager not found; using the preinstalled SDK as-is"
           fi
-          echo "Using sdkmanager: $SDKMANAGER"
-          test -x "$SDKMANAGER"
 
-          # Accept licences first; this exits non-zero when everything is
-          # already accepted, which is not an error for us.
-          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          # Print the real layout so any later failure here is diagnosable from
+          # the log alone.
+          echo "--- SDK root contents ---"
+          ls -1 "${ANDROID_HOME}" || true
+          echo "--- platforms: $(ls -1 "${ANDROID_HOME}/platforms" 2>/dev/null | tr '\n' ' ')"
+          echo "--- build-tools: $(ls -1 "${ANDROID_HOME}/build-tools" 2>/dev/null | tr '\n' ' ')"
+          echo "--- cmdline-tools: $(ls -1 "${ANDROID_HOME}/cmdline-tools" 2>/dev/null | tr '\n' ' ')"
 
-          # Capacitor 6 targets compileSdk 34 / build-tools 34.0.0.
-          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
-          echo "--- installed packages ---"
-          "$SDKMANAGER" --list_installed || true
+          # Fail here rather than deep inside Gradle if the platform Capacitor 6
+          # targets is genuinely absent.
+          test -d "${ANDROID_HOME}/platforms/android-34" \
+            || { echo "ERROR: Android platform 34 is missing from the SDK"; exit 1; }
 
       - name: Install dependencies
         run: npm ci
