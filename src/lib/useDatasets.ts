@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Dataset, Sample } from '../types';
+import type { Dataset, Sample, Turn } from '../types';
 import { buildJsonl, makeDataset, parseDataset, validateForExport } from './sharegpt';
 import { getBackend, kindFromName } from './fs';
 
@@ -9,10 +9,18 @@ import { getBackend, kindFromName } from './fs';
  * Design notes:
  *  - Samples are immutable-ish: an edit replaces the sample object inside its
  *    dataset, so React re-renders reliably and undo can keep plain snapshots.
- *  - `baseline` holds the value every turn had when the dataset was *imported*
- *    (not after each edit). Diff colouring compares against this, so the user
- *    always sees the total delta from the original data, which is what matters
- *    when reviewing a cleaning session.
+ *  - `baseline` holds the *complete turn list* each sample had when the dataset
+ *    was imported (not after each edit). Diff colouring compares against it, so
+ *    the user always sees the total delta from the original data.
+ *
+ *    It stores full turns rather than just text because "还原" has to undo
+ *    structural edits too. Recording only values meant an added or removed turn
+ *    shifted the indices, and restoring by index then wrote the wrong text into
+ *    the wrong row — silently duplicating a reply instead of reverting.
+ *
+ *    Only samples present at import get an entry. Anything absent from the map
+ *    was created this session (added or duplicated) and is therefore itself an
+ *    edit, which is what lets "还原" remove it.
  */
 
 export interface UndoEntry {
@@ -132,7 +140,7 @@ export function useDatasets(): UseDatasets {
   const pendingUndo = useRef<UndoEntry[]>([]);
 
   /** sampleId -> original turn values captured at import time. */
-  const baseline = useRef(new Map<string, string[]>());
+  const baseline = useRef(new Map<string, Turn[]>());
   /** sampleId -> dataset id, rebuilt whenever the sample set changes. */
   const index = useRef(new Map<string, { sample: Sample; dataset: Dataset }>());
   const outputDir = useRef<{ uri: string; label: string } | null>(null);
@@ -211,7 +219,11 @@ export function useDatasets(): UseDatasets {
           ds.warnings = res.warnings;
           warnings.push(...res.warnings.map((w) => `${pf.name}: ${w}`));
           for (const s of res.samples) {
-            baseline.current.set(s.id, s.conversations.map((t) => t.value));
+            // Deep copy: the sample's own array is mutated by later edits.
+            baseline.current.set(
+              s.id,
+              s.conversations.map((t) => ({ from: t.from, value: t.value })),
+            );
           }
           added.push(ds);
           fileCount++;
@@ -378,10 +390,14 @@ export function useDatasets(): UseDatasets {
               id: `${src.id}-copy-${Math.random().toString(36).slice(2, 6)}`,
               conversations: src.conversations.map((t) => ({ ...t })),
               extra: { ...src.extra },
+              // `sourceLine === 0` is the app's marker for a row that was not in
+              // the imported file, which drives the "新增" badge.
+              sourceLine: 0,
             };
             samples.splice(si + 1, 0, copy);
             next[di] = { ...next[di], samples };
-            baseline.current.set(copy.id, copy.conversations.map((t) => t.value));
+            // Deliberately not registered in `baseline`: a duplicate did not
+            // exist at import time, so it is itself an edit and "还原" removes it.
             return next;
           }
         }
@@ -421,7 +437,8 @@ export function useDatasets(): UseDatasets {
       setDatasets((prev) =>
         prev.map((d) => (d.id === datasetId ? { ...d, samples: [...d.samples, sample] } : d)),
       );
-      baseline.current.set(id, sample.conversations.map((t) => t.value));
+      // Deliberately not registered in `baseline`: this row did not exist at
+      // import time, so it is itself an edit and "还原" removes it.
       return id;
     },
     [],
@@ -465,41 +482,83 @@ export function useDatasets(): UseDatasets {
   const undo = useCallback((): boolean => step('undo'), [step]);
   const redo = useCallback((): boolean => step('redo'), [step]);
 
+  /**
+   * The imported turn values for a sample, or `undefined` when the sample was
+   * created this session. The UI needs only the text, so the roles recorded in
+   * the baseline map are projected away here.
+   */
   const baselineFor = useCallback(
-    (sampleId: string) => baseline.current.get(sampleId),
+    (sampleId: string): string[] | undefined => baseline.current.get(sampleId)?.map((t) => t.value),
     [],
   );
 
+  /**
+   * Number of samples that differ from the imported data in any way: edited
+   * text, changed roles, added or removed turns, marked deleted, or created
+   * this session.
+   *
+   * Deletions and additions must be counted, otherwise "还原" would look
+   * unavailable while there is still something to revert.
+   */
   const changedCount = useMemo(() => {
     let n = 0;
     for (const s of allSamples) {
       const base = baseline.current.get(s.id);
-      if (!base) continue;
+      // Created this session (added or duplicated).
+      if (!base) {
+        n++;
+        continue;
+      }
+      if (s.deleted) {
+        n++;
+        continue;
+      }
       if (base.length !== s.conversations.length) {
         n++;
         continue;
       }
-      if (s.conversations.some((t, i) => t.value !== base[i])) n++;
+      if (
+        s.conversations.some(
+          (t, i) => t.value !== base[i].value || t.from !== base[i].from,
+        )
+      ) {
+        n++;
+      }
     }
     return n;
   }, [allSamples]);
 
+  /**
+   * Discards every change made this session, returning the data to exactly what
+   * was imported.
+   *
+   * This restores the whole turn list rather than patching values by index, so
+   * added and removed turns are undone correctly. Restoring by index previously
+   * misaligned the baseline whenever the turn count changed, writing one reply's
+   * text into another row and duplicating it.
+   *
+   * Rows created this session have no baseline entry and are dropped, and the
+   * `deleted` flag is cleared — otherwise a marked-for-deletion row would stay
+   * deleted and "还原" would appear to do nothing.
+   */
   const resetChanges = useCallback(() => {
     setDatasets((prev) =>
       prev.map((d) => ({
         ...d,
-        samples: d.samples.map((s) => {
-          const base = baseline.current.get(s.id);
-          if (!base) return s;
-          return {
-            ...s,
-            conversations: s.conversations.map((t, i) =>
-              base[i] === undefined ? t : { ...t, value: base[i] },
-            ),
-          };
-        }),
+        samples: d.samples
+          .filter((s) => baseline.current.has(s.id))
+          .map((s) => {
+            const base = baseline.current.get(s.id) as Turn[];
+            return {
+              ...s,
+              deleted: false,
+              conversations: base.map((t) => ({ from: t.from, value: t.value })),
+            };
+          }),
       })),
     );
+    // Any queued steps belong to edits that no longer exist.
+    pendingUndo.current = [];
     setUndoStack([]);
     setRedoStack([]);
   }, []);
@@ -537,24 +596,54 @@ export function useDatasets(): UseDatasets {
         }),
       );
       for (const s of allSamples) {
-        const base = baseline.current.get(s.id) ?? [];
+        const base = baseline.current.get(s.id);
+        const header = { id: s.id, source: s.sourceId, sourceLine: s.sourceLine };
+
+        // A row created this session has no baseline entry.
+        if (!base) {
+          lines.push(JSON.stringify({ ...header, created: true, conversations: s.conversations }));
+          if (s.deleted) lines.push(JSON.stringify({ ...header, deleted: true }));
+          continue;
+        }
+
+        if (s.deleted) {
+          lines.push(JSON.stringify({ ...header, deleted: true }));
+          continue;
+        }
+
+        // Turn-by-turn changes, including role changes.
         s.conversations.forEach((t, i) => {
           const before = base[i];
-          if (before === undefined || before === t.value) return;
+          if (before === undefined) {
+            lines.push(
+              JSON.stringify({ ...header, turn: i, role: t.from, added: true, after: t.value }),
+            );
+            return;
+          }
+          if (before.value === t.value && before.from === t.from) return;
           lines.push(
             JSON.stringify({
-              id: s.id,
-              source: s.sourceId,
-              sourceLine: s.sourceLine,
+              ...header,
               turn: i,
               role: t.from,
-              before,
+              ...(before.from !== t.from ? { beforeRole: before.from } : {}),
+              before: before.value,
               after: t.value,
             }),
           );
         });
-        if (s.deleted) {
-          lines.push(JSON.stringify({ id: s.id, deleted: true }));
+
+        // Turns that no longer exist.
+        for (let i = s.conversations.length; i < base.length; i++) {
+          lines.push(
+            JSON.stringify({
+              ...header,
+              turn: i,
+              role: base[i].from,
+              removed: true,
+              before: base[i].value,
+            }),
+          );
         }
       }
       const dir = await ensureOutputDir();

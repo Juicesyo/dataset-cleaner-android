@@ -63,7 +63,7 @@ npm install
 npm run dev            # 局域网可访问，手机浏览器也能打开调试
 npm run typecheck      # TypeScript 类型检查
 npm run verify         # 数据层：解析 / 往返 / fingerprint 保留 / diff 不变量 (43 项)
-npm run verify:ui      # 浏览器端真实交互：导入、编辑、撤销、搜索、导出 (31 项)
+npm run verify:ui      # 浏览器端真实交互：导入、编辑、撤销、搜索、还原、导出 (42 项)
 npm run verify:layout  # 移动端布局、编辑框自适应、diff 对比度 (16 项)
 npm run build          # 产出 dist/
 ```

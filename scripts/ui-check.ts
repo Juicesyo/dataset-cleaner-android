@@ -9,7 +9,7 @@
  * Run with: npx vite-node scripts/ui-check.ts
  */
 
-import { chromium, type Page } from 'playwright';
+import { chromium, type Browser, type Page } from 'playwright';
 import { createServer, type ViteDevServer } from 'vite';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -343,9 +343,18 @@ async function main(): Promise<void> {
     (await page.locator('.drawer input[type="password"]').count()) === 1,
   );
 
+  /* ------------------------------------------------------------- reset */
+
+  // "还原" was previously untested, which is how it shipped broken: it restored
+  // text by index only, so an added turn shifted the baseline and wrote one
+  // reply's text into another row, and a row marked deleted could never be
+  // un-deleted (the button even stayed disabled, so it looked inert).
+  console.log('\n[9] 还原改动');
+  await runResetChecks(browser, url, datasetPath, errors);
+
   /* ------------------------------------------------------- no JS errors */
 
-  console.log('\n[9] 运行时错误检查');
+  console.log('\n[10] 运行时错误检查');
   // Ignore the aborted-download noise the export blob can trigger.
   const realErrors = errors.filter(
     (e) => !/Download the React DevTools|favicon/i.test(e),
@@ -355,6 +364,143 @@ async function main(): Promise<void> {
   await browser.close();
 
   console.log(`\n${failures === 0 ? '全部通过' : '存在失败'}: ${checks - failures}/${checks}`);
+}
+
+/**
+ * Exercises the "还原改动" button in four independent, freshly loaded pages.
+ *
+ * Each case needs a clean store, and the store lives only in memory, so a new
+ * context per case is both simpler and stricter than trying to unwind state.
+ */
+async function runResetChecks(
+  browser: Browser,
+  url: string,
+  datasetPath: string,
+  errors: string[],
+): Promise<void> {
+  const openFresh = async (): Promise<Page> => {
+    const ctx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+    });
+    const p = await ctx.newPage();
+    p.on('pageerror', (e) => errors.push(e.message));
+    p.on('console', (m) => {
+      if (m.type() === 'error') errors.push(m.text());
+    });
+    await p.goto(url, { waitUntil: 'networkidle' });
+    p.once('filechooser', (fc) => void fc.setFiles([datasetPath]));
+    await p.click('.toolbar button:has-text("导入")');
+    await p.click('.sheet-actions button:has-text("选择文件")');
+    await p.waitForSelector('.sample-card');
+    return p;
+  };
+
+  /** Reads rendered editor values, expanding the card first when needed. */
+  const valuesOf = async (p: Page, cardIndex: number): Promise<string[]> => {
+    const card = p.locator('.sample-card').nth(cardIndex);
+    if ((await card.locator('.edit-surface').count()) === 0) {
+      await card.locator('.sample-head').click();
+      await card.locator('.edit-surface').first().waitFor({ timeout: 5000 });
+    }
+    return card
+      .locator('.edit-surface')
+      .evaluateAll((els) => els.map((e) => (e as HTMLTextAreaElement).value));
+  };
+
+  const resetButton = (p: Page) => p.locator('.toolbar button:has-text("还原")');
+
+  // --- a text edit is reverted -------------------------------------------
+  {
+    const p = await openFresh();
+    await p.locator('.sample-card').first().locator('.sample-head').click();
+    await p.waitForSelector('.sample-card.expanded .edit-surface');
+    await typeInto(p, '.sample-card.expanded .edit-surface >> nth=1', '改过的回复一');
+    await p.locator('.search-input').click();
+    await p.waitForTimeout(400);
+
+    check('改文本后还原按钮可用', !(await resetButton(p).isDisabled()));
+    await resetButton(p).click();
+    await p.waitForTimeout(500);
+
+    const after = await valuesOf(p, 0);
+    check(
+      '还原恢复被修改的文本',
+      JSON.stringify(after) === JSON.stringify(['介绍一下杭州', '杭州是浙江省的省会，以西湖闻名。']),
+      JSON.stringify(after),
+    );
+    check('还原后按钮变为不可用', await resetButton(p).isDisabled());
+    await p.context().close();
+  }
+
+  // --- a soft-deleted row is un-deleted ----------------------------------
+  {
+    const p = await openFresh();
+    await p.locator('.sample-card').nth(1).locator('.sample-head').click();
+    await p.waitForTimeout(300);
+    await p.locator('.sample-card').nth(1).locator('button:has-text("标记删除")').click();
+    await p.locator('.search-input').click();
+    await p.waitForTimeout(400);
+
+    check('标记删除后卡片为删除态', (await p.locator('.sample-card.deleted').count()) === 1);
+    // Must be enabled even though no text changed, or the button looks inert.
+    check('仅标记删除时还原按钮仍可用', !(await resetButton(p).isDisabled()));
+
+    await resetButton(p).click();
+    await p.waitForTimeout(500);
+    check('还原清除删除标记', (await p.locator('.sample-card.deleted').count()) === 0);
+    await p.context().close();
+  }
+
+  // --- an added turn is removed without corrupting the rest --------------
+  {
+    const p = await openFresh();
+    await p.locator('.sample-card').first().locator('.sample-head').click();
+    await p.waitForSelector('.sample-card.expanded .edit-surface');
+    await p
+      .locator('.sample-card.expanded .turn')
+      .first()
+      .locator('button[title="在下方插入一轮"]')
+      .click();
+    await p.locator('.search-input').click();
+    await p.waitForTimeout(400);
+
+    check(
+      '插入后轮次数变为 3',
+      (await p.locator('.sample-card').first().locator('.edit-surface').count()) === 3,
+    );
+    await resetButton(p).click();
+    await p.waitForTimeout(500);
+
+    const after = await valuesOf(p, 0);
+    check('还原移除新增轮次', after.length === 2, JSON.stringify(after));
+    // Guards the exact regression: an index-shifted baseline used to duplicate
+    // the reply instead of reverting it.
+    check(
+      '还原后内容无重复',
+      JSON.stringify(after) ===
+        JSON.stringify(['介绍一下杭州', '杭州是浙江省的省会，以西湖闻名。']),
+      JSON.stringify(after),
+    );
+    await p.context().close();
+  }
+
+  // --- a duplicated row is dropped ---------------------------------------
+  {
+    const p = await openFresh();
+    await p.locator('.sample-card').first().locator('.sample-head').click();
+    await p.waitForSelector('.sample-card.expanded .edit-surface');
+    await p.locator('.sample-card').first().locator('button:has-text("复制此条")').click();
+    await p.locator('.search-input').click();
+    await p.waitForTimeout(400);
+
+    check('复制后样本数为 4', (await p.locator('.sample-card').count()) === 4);
+    await resetButton(p).click();
+    await p.waitForTimeout(500);
+    check('还原移除复制的样本', (await p.locator('.sample-card').count()) === 3);
+    await p.context().close();
+  }
 }
 
 main()
