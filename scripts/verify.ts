@@ -21,6 +21,8 @@ import { diffText } from '../src/lib/diff.ts';
 import {
   buildRewriteMessages,
   DEFAULT_CONFIG,
+  effectiveThinkingMode,
+  looksLikeReasoningModel,
   parseModelIds,
   resolveEndpoint,
   resolveModelsEndpoint,
@@ -474,6 +476,54 @@ console.log('\n[11] 思考标签与数据自带思维链的冲突');
     auto(`${S}数据\n${E}答案${S}又没写完`, '普通回复').text.includes('答案'),
     JSON.stringify(auto(`${S}数据\n${E}答案${S}又没写完`, '普通回复').text),
   );
+}
+
+/* --------------------------------------------- reasoning-model selection */
+
+console.log('\n[12] 模型类型与思考标签的联动');
+
+{
+  const reasoning = { ...DEFAULT_CONFIG, reasoningModel: true, thinkingMode: 'auto' as const };
+  const plain = { ...DEFAULT_CONFIG, reasoningModel: false, thinkingMode: 'auto' as const };
+
+  eq('默认按思考模型处理', DEFAULT_CONFIG.reasoningModel, true);
+  eq('思考模型沿用所选方式', effectiveThinkingMode(reasoning), 'auto');
+  eq('普通模型强制不剥离', effectiveThinkingMode(plain), 'never');
+  eq(
+    '普通模型即使选了剥离方式也不生效',
+    effectiveThinkingMode({ reasoningModel: false, thinkingMode: 'always' }),
+    'never',
+  );
+  eq(
+    '切回思考模型后仍保留原方式',
+    effectiveThinkingMode({ reasoningModel: true, thinkingMode: 'always' }),
+    'always',
+  );
+
+  // A plain model's output must survive untouched even if it looks like
+  // reasoning, because those tags then belong to the data.
+  const S = '<think>';
+  const E = '</think>';
+  const out = `${S}内容\n${E}答案`;
+  eq(
+    '普通模型下内容原样保留',
+    stripThinking(out, S, E, { mode: effectiveThinkingMode(plain), sourceText: '原文' }).text,
+    out,
+  );
+
+  check('识别 DeepSeek-R1', looksLikeReasoningModel('deepseek-r1'));
+  check('识别 deepseek-reasoner', looksLikeReasoningModel('deepseek-reasoner'));
+  check('识别 QwQ', looksLikeReasoningModel('qwq-32b'));
+  check('识别 OpenAI o 系列', looksLikeReasoningModel('o3-mini'));
+  check('识别 o1', looksLikeReasoningModel('o1-preview'));
+  check('识别带 thinking 的模型', looksLikeReasoningModel('qwen3-thinking'));
+  check('识别 magistral', looksLikeReasoningModel('magistral-small'));
+  check('普通模型不被误判：gpt-4o-mini', !looksLikeReasoningModel('gpt-4o-mini'));
+  check('普通模型不被误判：gpt-4o', !looksLikeReasoningModel('gpt-4o'));
+  check('普通模型不被误判：deepseek-chat', !looksLikeReasoningModel('deepseek-chat'));
+  check('普通模型不被误判：qwen2.5-72b', !looksLikeReasoningModel('qwen2.5-72b-instruct'));
+  check('普通模型不被误判：glm-4', !looksLikeReasoningModel('glm-4-plus'));
+  check('不误判含 o 的普通名字', !looksLikeReasoningModel('llama-3.1-8b-instruct'));
 }
 
 /* ----------------------------------------------------------------- done */

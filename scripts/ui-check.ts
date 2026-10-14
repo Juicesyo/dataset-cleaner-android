@@ -352,13 +352,66 @@ async function main(): Promise<void> {
     (await page.locator('.drawer button:has-text("获取列表")').count()) === 1,
   );
 
+  // Regression: "恢复默认" previously issued two separate updates that each
+  // spread the same render's config, so the second discarded the first and the
+  // start tag was never restored.
+  {
+    const startTag = page.locator('.drawer input[placeholder="<think>"]');
+    const endTag = page.locator('.drawer input[placeholder="</think>"]');
+    await startTag.fill('<<<start>>>');
+    await endTag.fill('<<<end>>>');
+    await page.waitForTimeout(200);
+    await page.click('.drawer button:has-text("恢复默认")');
+    await page.waitForTimeout(300);
+    check(
+      '恢复默认同时还原开始与结束标签',
+      (await startTag.inputValue()) === '<think>' && (await endTag.inputValue()) === '</think>',
+      `start=${await startTag.inputValue()} end=${await endTag.inputValue()}`,
+    );
+  }
+
+  // Model type: plain models must never have their output stripped.
+  {
+    const typeSelect = page.locator('.drawer select').first();
+    check(
+      '有模型类型选择，默认思考模型',
+      (await typeSelect.locator('option').count()) === 2 &&
+        (await typeSelect.inputValue()) === 'reasoning',
+      await typeSelect.inputValue(),
+    );
+    check(
+      '思考模型时显示标签字段',
+      (await page.locator('.drawer input[placeholder="<think>"]').count()) === 1,
+    );
+
+    await typeSelect.selectOption('plain');
+    await page.waitForTimeout(250);
+    check(
+      '普通模型时隐藏标签字段',
+      (await page.locator('.drawer input[placeholder="<think>"]').count()) === 0,
+    );
+    check(
+      '普通模型时给出说明',
+      ((await page.textContent('.drawer')) ?? '').includes('不处理思考内容'),
+    );
+
+    await typeSelect.selectOption('reasoning');
+    await page.waitForTimeout(250);
+    check(
+      '切回思考模型后标签恢复显示',
+      (await page.locator('.drawer input[placeholder="<think>"]').count()) === 1,
+    );
+  }
+
   // The model picker talks to `GET {base}/models`. Routing the request lets the
   // parsing and the chip list be tested without a live provider.
   await page.route('**/models', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ data: [{ id: 'zeta-model' }, { id: 'alpha-model' }] }),
+      body: JSON.stringify({
+        data: [{ id: 'deepseek-r1' }, { id: 'gpt-4o-mini' }, { id: 'zeta-model' }],
+      }),
     });
   });
   await baseUrlInput.fill('https://stub.local/v1');
@@ -368,27 +421,56 @@ async function main(): Promise<void> {
   const chips = await page.locator('.model-chips .chip').allTextContents();
   check(
     '模型列表被解析并排序',
-    JSON.stringify(chips) === JSON.stringify(['alpha-model', 'zeta-model']),
+    JSON.stringify(chips) === JSON.stringify(['deepseek-r1', 'gpt-4o-mini', 'zeta-model']),
     JSON.stringify(chips),
   );
 
-  await page.locator('.model-chips .chip', { hasText: 'zeta-model' }).click();
+  // Picking a reasoning-looking model must also set the model type, and say so.
+  // Start from "plain" so the switch is a real transition; a no-op must stay
+  // silent rather than announcing a change that did not happen.
+  await page.locator('.drawer select').first().selectOption('plain');
+  await page.waitForTimeout(200);
+
+  await page.locator('.model-chips .chip', { hasText: 'deepseek-r1' }).click();
+  await page.waitForTimeout(250);
   check(
     '点击模型后写入模型字段',
-    (await page.locator('.drawer input[placeholder="gpt-4o-mini"]').inputValue()) === 'zeta-model',
+    (await page.locator('.drawer input[placeholder="gpt-4o-mini"]').inputValue()) === 'deepseek-r1',
   );
   check(
     '选中的模型有高亮',
-    (await page.locator('.model-chips .chip-active').textContent()) === 'zeta-model',
+    (await page.locator('.model-chips .chip-active').textContent()) === 'deepseek-r1',
+  );
+  check(
+    '推理模型名会说明已自动切换类型',
+    ((await page.textContent('.drawer')) ?? '').includes('自动设为思考模型'),
+    (await page.textContent('.model-list-note').catch(() => '')) ?? '',
+  );
+  check(
+    '推理模型名后类型为思考模型',
+    (await page.locator('.drawer select').first().inputValue()) === 'reasoning',
+  );
+
+  // A plain-looking model must flip the type back, visibly.
+  await page.locator('.model-chips .chip', { hasText: 'gpt-4o-mini' }).click();
+  await page.waitForTimeout(250);
+  check(
+    '普通模型名会说明已自动切换类型',
+    ((await page.textContent('.drawer')) ?? '').includes('自动设为普通模型'),
+  );
+  check(
+    '普通模型名后类型为普通模型',
+    (await page.locator('.drawer select').first().inputValue()) === 'plain',
   );
 
   const savedConfig = await page.evaluate('localStorage.getItem("apk-evaluator.llm-config.v1")');
   check(
-    '模型与思考标签已持久化',
+    '模型与类型已持久化',
     Boolean(savedConfig) &&
-      JSON.parse(savedConfig as string).model === 'zeta-model' &&
+      JSON.parse(savedConfig as string).model === 'gpt-4o-mini' &&
+      JSON.parse(savedConfig as string).reasoningModel === false &&
       JSON.parse(savedConfig as string).thinkingStartTag === '<think>',
-    String(savedConfig).slice(0, 160),
+    String(savedConfig).slice(0, 200),
   );
 
   await page.unroute('**/models');

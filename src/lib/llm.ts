@@ -26,6 +26,14 @@ export interface LlmConfig {
    * inline in `content`. Writing that into a dataset would be wrong, and it also
    * makes batch output look chaotic, so anything between the tags is dropped.
    */
+  /**
+   * Whether the endpoint is a reasoning model that emits thinking blocks.
+   *
+   * Kept separate from `thinkingMode` so toggling the model type preserves the
+   * user's chosen stripping strategy. A non-reasoning model is never stripped:
+   * any thinking-looking tags in its output belong to the data being rewritten.
+   */
+  reasoningModel: boolean;
   thinkingStartTag: string;
   thinkingEndTag: string;
   /** How aggressively to remove reasoning from the model's output. */
@@ -55,7 +63,42 @@ export const DEFAULT_CONFIG: LlmConfig = {
   thinkingStartTag: '<think>',
   thinkingEndTag: '</think>',
   thinkingMode: 'auto',
+  reasoningModel: true,
 };
+
+/**
+ * The stripping mode actually applied for a configuration.
+ *
+ * A model flagged as non-reasoning never has its output stripped: any
+ * thinking-looking tags there come from the data, not from the model.
+ */
+export function effectiveThinkingMode(
+  config: Pick<LlmConfig, 'reasoningModel' | 'thinkingMode'>,
+): ThinkingMode {
+  return config.reasoningModel ? config.thinkingMode : 'never';
+}
+
+/**
+ * Guesses whether a model id belongs to a reasoning family.
+ *
+ * Used only to pre-select the model type when the user picks from the fetched
+ * list, and the result is reported in the UI so it is never a silent change.
+ */
+export function looksLikeReasoningModel(modelId: string): boolean {
+  const id = modelId.toLowerCase();
+  return [
+    // OpenAI o-series, DeepSeek reasoner, Qwen QwQ / thinking, generic markers.
+    /(^|[/\-_])o[1-9](\b|[-_.])/,
+    /deepseek[-_]?r1/,
+    /reasoner/,
+    /qwq/,
+    /[-_.]r1(\b|[-_.])/,
+    /thinking/,
+    /[-_.]think(\b|[-_.])/,
+    /reasoning/,
+    /magistral/,
+  ].some((re) => re.test(id));
+}
 
 /** Strips a trailing `/chat/completions` so other endpoints can be appended. */
 function baseRoot(baseUrl: string): string {
@@ -289,7 +332,7 @@ export async function chat(
   }
 
   const thinking = stripThinking(raw, config.thinkingStartTag, config.thinkingEndTag, {
-    mode: config.thinkingMode,
+    mode: effectiveThinkingMode(config),
     sourceText: opts.sourceText,
   });
   const cleaned = stripWrapper(thinking.text);

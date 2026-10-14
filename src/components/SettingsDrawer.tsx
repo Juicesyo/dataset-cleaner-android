@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { LlmConfig } from '../lib/llm';
-import { DEFAULT_CONFIG, DEFAULT_SYSTEM_PROMPT } from '../lib/llm';
+import { DEFAULT_CONFIG, DEFAULT_SYSTEM_PROMPT, looksLikeReasoningModel } from '../lib/llm';
 
 /**
  * Settings drawer: API endpoint, system prompt and batch options.
@@ -72,8 +72,14 @@ export function SettingsDrawer({
     saveConfig(config);
   }, [config]);
 
-  const set = <K extends keyof LlmConfig>(key: K, value: LlmConfig[K]) =>
-    onChange({ ...config, [key]: value });
+  /**
+   * Applies a partial update.
+   *
+   * A merge, not a per-field setter: two setters called in one handler would
+   * each spread the same render's `config`, so the second silently discarded
+   * the first. That is exactly how "恢复默认" failed to restore the start tag.
+   */
+  const patch = (next: Partial<LlmConfig>) => onChange({ ...config, ...next });
 
   const runFetchModels = async () => {
     setModelState('loading');
@@ -89,7 +95,7 @@ export function SettingsDrawer({
         setModelMessage(`获取到 ${ids.length} 个模型，点击下方列表选择。`);
         // Adopt the first model when the current value is clearly a placeholder.
         if (!ids.includes(config.model) && !config.model.trim()) {
-          set('model', ids[0]);
+          patch({ model: ids[0] });
         }
       }
     } catch (err) {
@@ -133,7 +139,7 @@ export function SettingsDrawer({
               autoComplete="off"
               spellCheck={false}
               value={config.baseUrl}
-              onChange={(e) => set('baseUrl', e.target.value)}
+              onChange={(e) => patch({ baseUrl: e.target.value })}
               placeholder="https://api.openai.com/v1"
             />
           </label>
@@ -148,7 +154,7 @@ export function SettingsDrawer({
               autoComplete="off"
               spellCheck={false}
               value={config.apiKey}
-              onChange={(e) => set('apiKey', e.target.value)}
+              onChange={(e) => patch({ apiKey: e.target.value })}
               placeholder="sk-..."
             />
           </label>
@@ -161,7 +167,7 @@ export function SettingsDrawer({
                 autoComplete="off"
                 spellCheck={false}
                 value={config.model}
-                onChange={(e) => set('model', e.target.value)}
+                onChange={(e) => patch({ model: e.target.value })}
                 placeholder="gpt-4o-mini"
               />
               <button
@@ -183,7 +189,22 @@ export function SettingsDrawer({
                     key={id}
                     type="button"
                     className={`chip ${id === config.model ? 'chip-active' : ''}`}
-                    onClick={() => set('model', id)}
+                    onClick={() => {
+                      // Pre-select the model type from the name, and say so, so
+                      // a reasoning model is not left mis-configured.
+                      const looksReasoning = looksLikeReasoningModel(id);
+                      if (looksReasoning !== config.reasoningModel) {
+                        patch({ model: id, reasoningModel: looksReasoning });
+                        setModelMessage(
+                          looksReasoning
+                            ? `已根据模型名把「模型类型」自动设为思考模型（${id}）`
+                            : `已根据模型名把「模型类型」自动设为普通模型（${id}）`,
+                        );
+                        setModelState('ok');
+                      } else {
+                        patch({ model: id });
+                      }
+                    }}
                     title={id}
                   >
                     {id}
@@ -209,7 +230,7 @@ export function SettingsDrawer({
                 min="0"
                 max="2"
                 value={config.temperature}
-                onChange={(e) => set('temperature', Number(e.target.value))}
+                onChange={(e) => patch({ temperature: Number(e.target.value) })}
               />
             </label>
             <label>
@@ -219,7 +240,7 @@ export function SettingsDrawer({
                 step="128"
                 min="1"
                 value={config.maxTokens}
-                onChange={(e) => set('maxTokens', Number(e.target.value))}
+                onChange={(e) => patch({ maxTokens: Number(e.target.value) })}
               />
             </label>
           </div>
@@ -231,7 +252,7 @@ export function SettingsDrawer({
               rows={3}
               spellCheck={false}
               value={config.extraBody}
-              onChange={(e) => set('extraBody', e.target.value)}
+              onChange={(e) => patch({ extraBody: e.target.value })}
               placeholder='{"top_p": 0.9}'
             />
           </label>
@@ -239,31 +260,52 @@ export function SettingsDrawer({
 
         <section className="field-group">
           <h3>思考模型</h3>
-          <p className="hint">
-            推理模型（如 DeepSeek-R1、QwQ）会把思考过程直接写在回复里。
-            这里设置包裹思考内容的标签，应用时会自动剥离，避免把思考过程写进数据集。
-            留空则不做剥离。
-          </p>
-
           <label>
-            剥离方式
+            模型类型
             <select
-              value={config.thinkingMode}
-              onChange={(e) => set('thinkingMode', e.target.value as LlmConfig['thinkingMode'])}
+              value={config.reasoningModel ? 'reasoning' : 'plain'}
+              onChange={(e) => patch({ reasoningModel: e.target.value === 'reasoning' })}
             >
-              <option value="auto">自动（推荐）：按原文是否含标签决定</option>
-              <option value="always">总是剥离全部思考块</option>
-              <option value="leading">只剥离开头那一段</option>
-              <option value="never">不剥离</option>
+              <option value="plain">普通模型（不处理思考内容）</option>
+              <option value="reasoning">思考模型 / 推理模型（剥离思考过程）</option>
             </select>
           </label>
-          <p className="hint">
-            <b>如果你的数据集本身就含思维链</b>，请用「自动」：原文不含标签时剥离全部；
-            原文含标签时，只剥离模型加在开头的思考段，正文里的思维链作为数据保留；
-            若原文整段都以该标签开头，则完全不剥离，以免误删数据。
-          </p>
 
-          <div className="row">
+          {!config.reasoningModel ? (
+            <p className="hint">
+              普通模型不会做任何思考内容处理。如果输出里出现了
+              <code>{config.thinkingStartTag || '<think>'}</code> 这类标签，
+              会被当作数据集本身的内容原样保留。改用推理模型（如 DeepSeek-R1、QwQ）时请切到上面第二项。
+            </p>
+          ) : (
+            <>
+              <p className="hint">
+                推理模型（如 DeepSeek-R1、QwQ）会把思考过程直接写在回复里。
+                这里设置包裹思考内容的标签，应用时会自动剥离，避免把思考过程写进数据集。
+                留空则不做剥离。
+              </p>
+
+              <label>
+                剥离方式
+                <select
+                  value={config.thinkingMode}
+                  onChange={(e) =>
+                    patch({ thinkingMode: e.target.value as LlmConfig['thinkingMode'] })
+                  }
+                >
+                  <option value="auto">自动（推荐）：按原文是否含标签决定</option>
+                  <option value="always">总是剥离全部思考块</option>
+                  <option value="leading">只剥离开头那一段</option>
+                  <option value="never">不剥离</option>
+                </select>
+              </label>
+              <p className="hint">
+                <b>如果你的数据集本身就含思维链</b>，请用「自动」：原文不含标签时剥离全部；
+                原文含标签时，按「模型新增了几块」判断，只剥离模型自己加的部分，
+                数据里的思维链原样保留。
+              </p>
+
+              <div className="row">
             <label>
               思考开始标签
               <input
@@ -271,7 +313,7 @@ export function SettingsDrawer({
                 autoComplete="off"
                 spellCheck={false}
                 value={config.thinkingStartTag}
-                onChange={(e) => set('thinkingStartTag', e.target.value)}
+                onChange={(e) => patch({ thinkingStartTag: e.target.value })}
                 placeholder="<think>"
               />
             </label>
@@ -282,7 +324,7 @@ export function SettingsDrawer({
                 autoComplete="off"
                 spellCheck={false}
                 value={config.thinkingEndTag}
-                onChange={(e) => set('thinkingEndTag', e.target.value)}
+                onChange={(e) => patch({ thinkingEndTag: e.target.value })}
                 placeholder="</think>"
               />
             </label>
@@ -290,10 +332,16 @@ export function SettingsDrawer({
           <button
             type="button"
             className="mini"
-            onClick={() => {
-              set('thinkingStartTag', '<think>');
-              set('thinkingEndTag', '</think>');
-            }}
+            onClick={() =>
+              // One merged update: two separate calls would both spread this
+              // render's `config`, so the second would undo the first and the
+              // start tag would never be restored.
+              patch({
+                thinkingStartTag: DEFAULT_CONFIG.thinkingStartTag,
+                thinkingEndTag: DEFAULT_CONFIG.thinkingEndTag,
+                thinkingMode: DEFAULT_CONFIG.thinkingMode,
+              })
+            }
           >
             恢复默认 (&lt;think&gt; … &lt;/think&gt;)
           </button>
@@ -302,6 +350,8 @@ export function SettingsDrawer({
             <code>&lt;reasoning&gt;</code>），改成对应标签即可。只有开始标签、
             没有结束标签时，会从开始标签处全部丢弃，并按「返回空内容」报错。
           </p>
+            </>
+          )}
         </section>
 
         <section className="field-group">
@@ -311,12 +361,12 @@ export function SettingsDrawer({
             rows={8}
             spellCheck={false}
             value={config.systemPrompt}
-            onChange={(e) => set('systemPrompt', e.target.value)}
+            onChange={(e) => patch({ systemPrompt: e.target.value })}
           />
           <button
             type="button"
             className="mini"
-            onClick={() => set('systemPrompt', DEFAULT_SYSTEM_PROMPT)}
+            onClick={() => patch({ systemPrompt: DEFAULT_SYSTEM_PROMPT })}
           >
             恢复默认提示词
           </button>
