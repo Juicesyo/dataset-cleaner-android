@@ -1,0 +1,102 @@
+name: Build Android APK
+
+# Builds a debug APK on every push and on manual dispatch, and publishes it as a
+# downloadable artifact. No local Android SDK is required — the runner provides
+# the SDK, JDK and Gradle.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Verify data layer
+        run: npm run verify
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify UI behaviour
+        run: npm run verify:ui
+
+      - name: Verify mobile layout and diff contrast
+        run: npm run verify:layout
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Add Android platform
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
+      # The native sources are kept in the repo so the Android bridge is
+      # reproducible without a generated Android project being checked in.
+      #
+      # MainActivity must be replaced, not merely added: Capacitor only
+      # auto-discovers plugins listed in assets/capacitor.plugins.json, which is
+      # generated for plugin *modules*, not for a plugin living in the app. The
+      # generated MainActivity therefore has to register SafPlugin explicitly or
+      # the `Saf` bridge is missing in the APK.
+      - name: Install native Android sources
+        run: |
+          set -euo pipefail
+          PKG=android/app/src/main/java/com/dsh/apkevaluator
+          mkdir -p "$PKG"
+          cp android-plugin/SafPlugin.java "$PKG/SafPlugin.java"
+          cp android-plugin/MainActivity.java "$PKG/MainActivity.java"
+          echo "--- installed native sources ---"
+          ls -la "$PKG"
+          echo "--- verifying plugin registration is present ---"
+          grep -q "registerPlugin(SafPlugin.class)" "$PKG/MainActivity.java"
+          echo "OK: MainActivity registers SafPlugin"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dataset-cleaner-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30

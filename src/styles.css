@@ -1,0 +1,800 @@
+/* ==========================================================================
+   数据集人工清理 — styles
+   Mobile-first. Uses safe-area insets so the toolbar and sheets clear the
+   notch and gesture bar on phones.
+   ========================================================================== */
+
+:root {
+  --bg: #11151c;
+  --bg-2: #171d26;
+  --bg-3: #1e2632;
+  --border: #2b3644;
+  --border-2: #3a4757;
+  --fg: #e6ebf2;
+  --fg-dim: #9aa7b8;
+  --fg-faint: #6b7889;
+  --accent: #4c8dff;
+  --accent-2: #2f6fd0;
+  --danger: #ff5f57;
+  --ok: #3ecf8e;
+
+  /* Diff palette: green for added text, red for removed, amber caret marks. */
+  --diff-add-bg: rgba(62, 207, 142, 0.22);
+  --diff-add-fg: #7ff0bc;
+  --diff-del-bg: rgba(255, 95, 87, 0.2);
+  --diff-del-fg: #ff9b95;
+
+  --user-tint: rgba(76, 141, 255, 0.08);
+  --model-tint: rgba(62, 207, 142, 0.07);
+
+  /* Editor metrics — shared by the textarea and its diff backdrop. */
+  --edit-font: 15px/1.55 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --edit-pad: 10px 12px;
+  --edit-radius: 8px;
+
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans SC",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  overscroll-behavior-y: none;
+}
+
+#root,
+.app {
+  min-height: 100vh;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: calc(24px + var(--safe-bottom));
+}
+
+/* ---------------------------------------------------------------- buttons */
+
+button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-height: 38px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+button:hover:not(:disabled) {
+  background: #26303d;
+}
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+button.primary {
+  background: var(--accent-2);
+  border-color: var(--accent);
+}
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+}
+button.danger {
+  border-color: rgba(255, 95, 87, 0.5);
+  color: #ffb3ae;
+}
+button.danger:hover:not(:disabled) {
+  background: rgba(255, 95, 87, 0.15);
+}
+button.mini {
+  padding: 3px 8px;
+  min-height: 28px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+button.big {
+  width: 100%;
+  min-height: 46px;
+}
+button.link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 0;
+  min-height: 0;
+  text-decoration: underline;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  width: 100%;
+  min-height: 38px;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+textarea.code {
+  font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+  resize: vertical;
+}
+select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--fg-dim) 50%),
+    linear-gradient(135deg, var(--fg-dim) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+}
+
+/* ---------------------------------------------------------------- toolbar */
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+  padding: calc(8px + var(--safe-top)) 10px 8px;
+}
+.toolbar-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.toolbar-row button {
+  flex: 1 1 auto;
+  min-width: 62px;
+  padding: 7px 8px;
+}
+.toolbar-stats {
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.toolbar-stats .dot {
+  color: var(--fg-faint);
+}
+.toolbar-stats .hl {
+  color: var(--accent);
+}
+.toolbar-stats .hl-edit {
+  color: #ffcf70;
+}
+
+/* -------------------------------------------------------------- searchbar */
+
+.searchbar {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.search-filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.search-filters select {
+  flex: 1 1 96px;
+  min-width: 0;
+  font-size: 12px;
+  min-height: 32px;
+  padding: 4px 24px 4px 8px;
+}
+.search-filters button.mini {
+  flex: 0 0 auto;
+}
+
+/* ------------------------------------------------------------ batch panel */
+
+.batch-panel {
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.batch-row {
+  display: flex;
+  gap: 6px;
+}
+.batch-instruction {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.batch-row button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.progress {
+  position: relative;
+  height: 22px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  transition: width 0.2s ease;
+}
+.progress-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--fg);
+}
+.batch-summary {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.batch-summary .warn {
+  color: var(--danger);
+}
+.batch-errors {
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+.batch-errors summary {
+  cursor: pointer;
+  color: var(--danger);
+}
+.batch-errors ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.batch-errors li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 5px;
+}
+.err-msg {
+  color: var(--fg-dim);
+  font-size: 11px;
+  word-break: break-word;
+}
+
+/* ------------------------------------------------------------------- list */
+
+.list {
+  flex: 1;
+  padding: 8px 8px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.empty {
+  margin: 48px auto;
+  max-width: 460px;
+  text-align: center;
+  color: var(--fg-dim);
+  line-height: 1.7;
+}
+.empty h2 {
+  color: var(--fg);
+  font-size: 17px;
+  margin: 0 0 10px;
+}
+.empty code {
+  background: var(--bg-3);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.load-more {
+  margin: 10px 0 30px;
+  width: 100%;
+}
+
+.row-wrap {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.row-check {
+  padding-top: 12px;
+  flex: 0 0 auto;
+}
+.row-check input {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  accent-color: var(--accent);
+}
+
+/* --------------------------------------------------------------- samples */
+
+.sample-card {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.sample-card.expanded {
+  border-color: var(--border-2);
+}
+.sample-card.deleted {
+  opacity: 0.55;
+  border-style: dashed;
+}
+.sample-card.flash {
+  animation: flash 1.6s ease;
+}
+@keyframes flash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(76, 141, 255, 0);
+  }
+  20% {
+    box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.55);
+  }
+}
+
+.sample-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.sample-head:active {
+  background: var(--bg-3);
+}
+.caret {
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+  width: 12px;
+}
+.sample-no {
+  color: var(--fg-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+.sample-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+.sample-badges {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border-2);
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.badge.edited {
+  color: #ffcf70;
+  border-color: rgba(255, 207, 112, 0.45);
+  background: rgba(255, 207, 112, 0.1);
+}
+.badge.new {
+  color: var(--ok);
+  border-color: rgba(62, 207, 142, 0.45);
+}
+.badge.del {
+  color: var(--danger);
+  border-color: rgba(255, 95, 87, 0.45);
+}
+
+.sample-body {
+  padding: 0 8px 10px;
+  border-top: 1px solid var(--border);
+}
+.sample-toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 7px 2px;
+  flex-wrap: wrap;
+}
+.fp {
+  font: 10px ui-monospace, monospace;
+  color: var(--fg-faint);
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+/* ---------------------------------------------------------------- turns */
+
+.turn {
+  border-radius: 8px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.turn-user {
+  border-left: 3px solid var(--accent);
+}
+.turn-model {
+  border-left: 3px solid var(--ok);
+}
+.turn-focused {
+  border-color: var(--accent);
+}
+.turn-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  background: rgba(0, 0, 0, 0.16);
+  flex-wrap: wrap;
+}
+.role-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.role-user {
+  background: rgba(76, 141, 255, 0.2);
+  color: #9cc4ff;
+}
+.role-model {
+  background: rgba(62, 207, 142, 0.18);
+  color: #8ee8b9;
+}
+.turn-index {
+  font-size: 10px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+.changed-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ffcf70;
+  flex: 0 0 auto;
+}
+.diff-stat {
+  display: inline-flex;
+  gap: 5px;
+  font: 10px ui-monospace, monospace;
+}
+.diff-stat .add {
+  color: var(--diff-add-fg);
+}
+.diff-stat .del {
+  color: var(--diff-del-fg);
+}
+.turn-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+/* ------------------------------------------------- editing surface + diff */
+
+/*
+ * The backdrop and the textarea must agree on every text metric, otherwise the
+ * coloured words drift away from the caret. They share --edit-font, --edit-pad
+ * and the same border width, and the textarea's own background is transparent
+ * whenever the backdrop is present.
+ */
+.edit-stack {
+  position: relative;
+}
+.diff-backdrop,
+.edit-surface {
+  font: var(--edit-font);
+  padding: var(--edit-pad);
+  border: 1px solid transparent;
+  border-radius: var(--edit-radius);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  tab-size: 4;
+  margin: 0;
+  letter-spacing: normal;
+  text-align: left;
+}
+.diff-backdrop {
+  position: absolute;
+  inset: 0;
+  color: transparent;
+  pointer-events: none;
+  overflow: hidden;
+  background: transparent;
+}
+.edit-surface {
+  position: relative;
+  display: block;
+  width: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  resize: none;
+  border-color: var(--border);
+}
+.edit-surface:focus {
+  border-color: var(--accent);
+}
+/* When a diff is shown the textarea becomes a transparent caret layer. */
+.edit-surface.overlay {
+  background: transparent;
+  color: transparent;
+  caret-color: var(--fg);
+  border-color: transparent;
+}
+.edit-surface.overlay::selection {
+  background: rgba(76, 141, 255, 0.35);
+}
+
+.seg-same {
+  color: var(--fg);
+}
+.seg-add {
+  background: var(--diff-add-bg);
+  color: var(--diff-add-fg);
+  border-radius: 2px;
+}
+.seg-del {
+  background: var(--diff-del-bg);
+  color: var(--diff-del-fg);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  border-radius: 2px;
+}
+
+/* ---------------------------------------------------------------- drawer */
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 100;
+  display: flex;
+  justify-content: flex-end;
+}
+.drawer {
+  width: min(520px, 100%);
+  max-width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg-2);
+  border-left: 1px solid var(--border);
+  padding: 12px 14px calc(28px + var(--safe-bottom));
+  box-shadow: -8px 0 30px rgba(0, 0, 0, 0.4);
+}
+/* On phones sheets rise from the bottom, which is easier to reach. */
+@media (max-width: 700px) {
+  .drawer-backdrop {
+    align-items: flex-end;
+  }
+  .drawer {
+    height: min(88vh, 100%);
+    border-left: none;
+    border-top: 1px solid var(--border-2);
+    border-radius: 14px 14px 0 0;
+    padding-top: calc(12px + var(--safe-top));
+  }
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.drawer-head h2 {
+  font-size: 16px;
+  margin: 0;
+}
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.field-group h3 {
+  font-size: 13px;
+  margin: 0;
+  color: var(--fg-dim);
+  font-weight: 600;
+}
+.field-group label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.field-group .row {
+  display: flex;
+  gap: 8px;
+}
+.field-group .row label {
+  flex: 1;
+}
+.hint {
+  font-size: 11px;
+  color: var(--fg-faint);
+  margin: 0;
+  line-height: 1.6;
+}
+.hint code {
+  background: var(--bg-3);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.sheet-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+.test-result {
+  font: 11px/1.5 ui-monospace, monospace;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow: auto;
+}
+.test-result.ok {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.test-result.fail {
+  border-color: var(--danger);
+  color: #ffb3ae;
+}
+
+/* -------------------------------------------------------------- file list */
+
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.file-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+.file-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.file-meta {
+  font-size: 11px;
+  color: var(--fg-faint);
+  flex: 0 0 auto;
+}
+
+/* ----------------------------------------------------------------- toast */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(16px + var(--safe-bottom));
+  z-index: 200;
+  max-width: min(560px, calc(100vw - 24px));
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.5);
+  white-space: pre-wrap;
+  word-break: break-word;
+  animation: toast-in 0.18s ease;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+}
+.toast.ok {
+  border-color: rgba(62, 207, 142, 0.6);
+  color: #b6f2d5;
+}
+.toast.err {
+  border-color: rgba(255, 95, 87, 0.6);
+  color: #ffc0bb;
+}
+
+/* ---------------------------------------------------- wider screens layout */
+
+@media (min-width: 900px) {
+  .app {
+    max-width: 980px;
+    margin: 0 auto;
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+  }
+  :root {
+    --edit-font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

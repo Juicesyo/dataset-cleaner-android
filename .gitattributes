@@ -1,0 +1,25 @@
+# Normalise line endings in the repository to LF.
+#
+# The Android build runs on Linux in CI. Pinning the committed form to LF keeps
+# checkouts identical regardless of the contributor's core.autocrlf setting, so
+# shell scripts and Java sources cannot arrive with CRLF and break the build.
+* text=auto eol=lf
+
+# Gradle wrapper scripts must stay executable and LF-terminated.
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+
+# Binary assets: never touch these.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.apk binary
+*.aab binary
+*.jar binary
+*.keystore binary
+*.jks binary
+*.ttf binary
+*.woff binary
+*.woff2 binary

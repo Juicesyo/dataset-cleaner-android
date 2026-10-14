@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/app/src/main/assets/public/
+
+# Capacitor generates these from capacitor.config.ts on `cap add`.
+# The native SAF plugin in android-plugin/ is the only checked-in native source.
+android/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# TypeScript incremental build state
+*.tsbuildinfo
+
+# Local verification scratch files and screenshot output
+scripts/probe-*.ts
+screenshot-*.png
