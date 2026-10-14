@@ -475,6 +475,20 @@ export default function App() {
           warnings: d.warnings.length,
         }))}
         onRemove={(id) => store.removeDataset(id)}
+        onRemoveMany={(ids) => {
+          store.removeDatasets(ids);
+          // Keep the batch scope honest: selected rows that no longer exist
+          // would otherwise silently count as "checked" in the UI.
+          setSelected((prev) => {
+            const next = new Set(prev);
+            for (const id of ids) {
+              const ds = store.datasets.find((d) => d.id === id);
+              for (const s of ds?.samples ?? []) next.delete(s.id);
+            }
+            return next;
+          });
+          notify('ok', `已移除 ${ids.length} 个数据集`);
+        }}
       />
 
       <SaveSheet
@@ -529,10 +543,31 @@ interface ImportSheetProps {
   onPick: (directory: boolean) => void;
   datasets: { id: string; name: string; count: number; warnings: number }[];
   onRemove: (id: string) => void;
+  onRemoveMany: (ids: string[]) => void;
 }
 
-function ImportSheet({ open, onClose, onPick, datasets, onRemove }: ImportSheetProps) {
+function ImportSheet({ open, onClose, onPick, datasets, onRemove, onRemoveMany }: ImportSheetProps) {
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [confirming, setConfirming] = useState(false);
+
+  // Drop selections whose dataset is gone, so a stale id cannot be "removed"
+  // again or inflate the selected count.
+  useEffect(() => {
+    setChecked((prev) => {
+      if (prev.size === 0) return prev;
+      const alive = new Set(datasets.map((d) => d.id));
+      const next = new Set([...prev].filter((id) => alive.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [datasets]);
+
   if (!open) return null;
+
+  const allChecked = datasets.length > 0 && checked.size === datasets.length;
+  const someChecked = checked.size > 0 && !allChecked;
+
+  const toggleAll = (on: boolean) =>
+    setChecked(on ? new Set(datasets.map((d) => d.id)) : new Set());
   // Most mobile browsers cannot select a folder, so say so up front rather than
   // letting the button lead to an empty import.
   const directoryOk = directoryImportAvailable();
@@ -580,16 +615,95 @@ function ImportSheet({ open, onClose, onPick, datasets, onRemove }: ImportSheetP
         <section className="field-group">
           <h3>已导入（{datasets.length}）</h3>
           {datasets.length === 0 && <p className="hint">暂无。</p>}
+
+          {datasets.length > 0 && (
+            <>
+              <div className="file-toolbar">
+                <label className="file-select-all">
+                  <input
+                    type="checkbox"
+                    checked={allChecked}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someChecked && !allChecked;
+                    }}
+                    onChange={(e) => toggleAll(e.target.checked)}
+                    aria-label="全选数据集"
+                  />
+                  全选
+                </label>
+                <span className="file-selected-count">
+                  {checked.size > 0 ? `已选 ${checked.size}` : '未选择'}
+                </span>
+                <button
+                  type="button"
+                  className="mini danger"
+                  disabled={checked.size === 0}
+                  onClick={() => setConfirming(true)}
+                >
+                  移除选中{checked.size > 0 ? ` (${checked.size})` : ''}
+                </button>
+              </div>
+
+              {confirming && (
+                <div className="warn-box">
+                  <strong>确认移除 {checked.size} 个数据集？</strong>
+                  <p>其中未保存的改动会一并丢弃，原文件不受影响，可以重新导入。</p>
+                  <div className="warn-actions">
+                    <button
+                      type="button"
+                      className="mini danger"
+                      onClick={() => {
+                        onRemoveMany([...checked]);
+                        setChecked(new Set());
+                        setConfirming(false);
+                      }}
+                    >
+                      确认移除
+                    </button>
+                    <button type="button" className="mini" onClick={() => setConfirming(false)}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
           <ul className="file-list">
             {datasets.map((d) => (
               <li key={d.id}>
+                <input
+                  type="checkbox"
+                  className="file-check"
+                  checked={checked.has(d.id)}
+                  onChange={(e) =>
+                    setChecked((prev) => {
+                      const next = new Set(prev);
+                      if (e.target.checked) next.add(d.id);
+                      else next.delete(d.id);
+                      return next;
+                    })
+                  }
+                  aria-label={`选择 ${d.name}`}
+                />
                 <span className="file-name" title={d.name}>
                   {d.name}
                 </span>
                 <span className="file-meta">
                   {d.count} 条{d.warnings > 0 ? ` · ${d.warnings} 警告` : ''}
                 </span>
-                <button type="button" className="mini danger" onClick={() => onRemove(d.id)}>
+                <button
+                  type="button"
+                  className="mini danger"
+                  onClick={() => {
+                    onRemove(d.id);
+                    setChecked((prev) => {
+                      const next = new Set(prev);
+                      next.delete(d.id);
+                      return next;
+                    });
+                  }}
+                >
                   移除
                 </button>
               </li>

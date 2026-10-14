@@ -45,6 +45,8 @@ export interface UseDatasets {
   importFiles: () => Promise<ImportReport>;
   importDirectory: () => Promise<ImportReport>;
   removeDataset: (id: string) => void;
+  /** Removes several datasets at once, for the import sheet's batch action. */
+  removeDatasets: (ids: string[]) => void;
   allSamples: Sample[];
   sampleById: (id: string) => { sample: Sample; dataset: Dataset } | undefined;
   updateTurn: (sampleId: string, turnIndex: number, value: string, coalesce?: string) => void;
@@ -707,11 +709,41 @@ export function useDatasets(): UseDatasets {
     [allSamples, changedCount, saveTarget, chooseSaveTarget],
   );
 
+  /**
+   * Drops datasets and everything that referred to them.
+   *
+   * Removing only the dataset entries would leave their samples in `baseline`
+   * (a leak) and their steps on the undo stack. The latter is user-visible: the
+   * undo button stays enabled, yet pressing it does nothing because the target
+   * row is gone.
+   */
+  const removeDatasets = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      const doomed = new Set(ids);
+      const removedSamples = new Set<string>();
+      for (const d of datasets) {
+        if (!doomed.has(d.id)) continue;
+        for (const s of d.samples) removedSamples.add(s.id);
+      }
+
+      for (const id of removedSamples) baseline.current.delete(id);
+      setDatasets((prev) => prev.filter((d) => !doomed.has(d.id)));
+      setUndoStack((prev) => prev.filter((e) => !removedSamples.has(e.sampleId)));
+      setRedoStack((prev) => prev.filter((e) => !removedSamples.has(e.sampleId)));
+      pendingUndo.current = pendingUndo.current.filter(
+        (e) => !removedSamples.has(e.sampleId),
+      );
+    },
+    [datasets],
+  );
+
   return {
     datasets,
     importFiles,
     importDirectory,
-    removeDataset: (id: string) => setDatasets((prev) => prev.filter((d) => d.id !== id)),
+    removeDataset: (id: string) => removeDatasets([id]),
+    removeDatasets,
     allSamples,
     sampleById: (id: string) => index.current.get(id),
     updateTurn,

@@ -492,9 +492,12 @@ async function main(): Promise<void> {
   console.log('\n[11] 目录导入');
   await runDirectoryImportChecks(browser, url, errors);
 
+  console.log('\n[12] 导入面板批量移除');
+  await runBatchRemoveChecks(browser, url, datasetPath, errors);
+
   /* ------------------------------------------------------- no JS errors */
 
-  console.log('\n[12] 运行时错误检查');
+  console.log('\n[13] 运行时错误检查');
   // Ignore the aborted-download noise the export blob can trigger.
   const realErrors = errors.filter(
     (e) => !/Download the React DevTools|favicon/i.test(e),
@@ -838,6 +841,158 @@ async function runDirectoryImportChecks(
     );
     await ctx.close();
   }
+}
+
+/**
+ * Covers selecting and batch-removing imported datasets.
+ *
+ * Also checks the side effects of removal: `baseline` and the undo stack must
+ * drop the removed rows, otherwise the undo button stays enabled while doing
+ * nothing when pressed.
+ */
+async function runBatchRemoveChecks(
+  browser: Browser,
+  url: string,
+  datasetPath: string,
+  errors: string[],
+): Promise<void> {
+  // Three distinct files so per-row selection and select-all differ.
+  const dir = mkdtempSync(join(tmpdir(), 'batchremove-'));
+  const paths: string[] = [];
+  for (let i = 1; i <= 3; i++) {
+    const p = join(dir, `set${i}.jsonl`);
+    writeFileSync(
+      p,
+      JSON.stringify({
+        conversations: [
+          { from: 'human', value: `问${i}` },
+          { from: 'gpt', value: `答${i}` },
+        ],
+        _input_fingerprint: `fp-${i}`,
+      }) + '\n',
+      'utf8',
+    );
+    paths.push(p);
+  }
+
+  const ctx = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+  });
+  const p = await ctx.newPage();
+  p.on('pageerror', (e) => errors.push(e.message));
+  p.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text());
+  });
+  await p.goto(url, { waitUntil: 'networkidle' });
+
+  // Import all three files at once.
+  p.once('filechooser', (fc) => void fc.setFiles(paths));
+  await p.click('.toolbar button:has-text("导入")');
+  await p.click('.sheet-actions button:has-text("选择文件")');
+  await p.waitForSelector('.sample-card');
+  await p.waitForTimeout(300);
+
+  // Importing closes the sheet, so reopen it to work with the file list.
+  await p.click('.toolbar button:has-text("导入")');
+  await p.waitForSelector('.file-list li', { timeout: 5000 });
+
+  const rows = () => p.locator('.file-list li').count();
+  const removeSelected = p.locator('.file-toolbar button:has-text("移除选中")');
+  const selectAll = p.locator('.file-select-all input');
+
+  check('导入了 3 个数据集', (await rows()) === 3, String(await rows()));
+  check('未选择时批量移除按钮禁用', await removeSelected.isDisabled());
+  check('初始显示未选择', ((await p.textContent('.file-selected-count')) ?? '').includes('未选择'));
+
+  // --- select two individually ------------------------------------------
+  await p.locator('.file-list li').nth(0).locator('.file-check').check();
+  await p.locator('.file-list li').nth(2).locator('.file-check').check();
+  await p.waitForTimeout(200);
+  check('单选后计数正确', ((await p.textContent('.file-selected-count')) ?? '').includes('已选 2'));
+  check('部分选中时全选为半选态', await selectAll.evaluate((el) => (el as HTMLInputElement).indeterminate));
+  check('有选择时批量移除按钮可用', !(await removeSelected.isDisabled()));
+
+  // --- select all --------------------------------------------------------
+  await selectAll.check();
+  await p.waitForTimeout(200);
+  check('全选后计数为 3', ((await p.textContent('.file-selected-count')) ?? '').includes('已选 3'));
+  check('全选后不再是半选态', !(await selectAll.evaluate((el) => (el as HTMLInputElement).indeterminate)));
+  check(
+    '全选后按钮显示数量',
+    ((await removeSelected.textContent()) ?? '').includes('3'),
+    (await removeSelected.textContent()) ?? '',
+  );
+
+  // --- unselect all ------------------------------------------------------
+  await selectAll.uncheck();
+  await p.waitForTimeout(200);
+  check('取消全选后清空选择', ((await p.textContent('.file-selected-count')) ?? '').includes('未选择'));
+  check('取消全选后按钮再次禁用', await removeSelected.isDisabled());
+
+  // --- batch remove needs confirmation -----------------------------------
+  await selectAll.check();
+  await p.waitForTimeout(150);
+  await removeSelected.click();
+  await p.waitForTimeout(200);
+  check('批量移除先要求确认', (await p.locator('.warn-box').count()) === 1);
+  check('确认框说明影响', ((await p.textContent('.warn-box')) ?? '').includes('原文件不受影响'));
+  check('确认前数据集仍在', (await rows()) === 3);
+
+  await p.click('.warn-box button:has-text("取消")');
+  await p.waitForTimeout(200);
+  check('取消后不删除任何数据集', (await rows()) === 3);
+  check('取消后确认框关闭', (await p.locator('.warn-box').count()) === 0);
+
+  // --- confirm: everything goes -----------------------------------------
+  await removeSelected.click();
+  await p.waitForTimeout(150);
+  await p.click('.warn-box button:has-text("确认移除")');
+  await p.waitForTimeout(400);
+  check('确认后数据集被全部移除', (await rows()) === 0, String(await rows()));
+  check(
+    '移除后回到未导入状态',
+    ((await p.textContent('.drawer')) ?? '').includes('暂无'),
+  );
+
+  await p.click('.drawer-head button:has-text("关闭")');
+  await p.waitForTimeout(200);
+  check('列表已清空', (await p.locator('.sample-card').count()) === 0);
+
+  // --- removing must also prune the undo history ------------------------
+  // Otherwise the undo button stays enabled but pressing it does nothing,
+  // because the step points at a row that no longer exists.
+  p.once('filechooser', (fc) => void fc.setFiles(paths));
+  await p.click('.toolbar button:has-text("导入")');
+  await p.click('.sheet-actions button:has-text("选择文件")');
+  await p.waitForSelector('.sample-card');
+
+  await p.locator('.sample-card').first().locator('.sample-head').click();
+  await p.waitForSelector('.sample-card.expanded .edit-surface');
+  await typeInto(p, '.sample-card.expanded .edit-surface >> nth=1', '改过的内容');
+  await p.locator('.search-input').click();
+  await p.waitForTimeout(400);
+
+  const undoButton = p.locator('.toolbar button:has-text("撤销")');
+  check('编辑后撤销可用', !(await undoButton.isDisabled()));
+
+  await p.click('.toolbar button:has-text("导入")');
+  await p.waitForSelector('.file-list li', { timeout: 5000 });
+  await p.locator('.file-select-all input').check();
+  await p.locator('.file-toolbar button:has-text("移除选中")').click();
+  await p.click('.warn-box button:has-text("确认移除")');
+  await p.waitForTimeout(400);
+  await p.click('.drawer-head button:has-text("关闭")');
+  await p.waitForTimeout(300);
+
+  check(
+    '移除数据集后撤销历史被清理',
+    await undoButton.isDisabled(),
+    '撤销按钮仍可用说明撤销栈未随数据集一起清理',
+  );
+
+  await ctx.close();
 }
 
 main()
